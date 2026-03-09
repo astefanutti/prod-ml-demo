@@ -1,0 +1,11 @@
+project: smartshop
+provider: local
+registry:
+  registry_type: file
+  path: data/registry.db
+online_store:
+  type: redis
+  connection_string: ${REDIS_HOST}:${REDIS_PORT}
+offline_store:
+  type: file
+entity_key_serialization_version: 3

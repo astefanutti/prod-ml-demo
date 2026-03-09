@@ -1,0 +1,13 @@
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+WORKDIR /app
+
+COPY requirements-training.txt .
+RUN pip install --no-cache-dir -r requirements-training.txt
+
+COPY training/recommendation/ training/recommendation/
+COPY feast/feature_repo/ feast/feature_repo/
+
+USER 1001
+
+CMD ["torchrun", "--nproc_per_node=1", "training/recommendation/train.py"]

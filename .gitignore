@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (downloaded datasets -- too large for git)
+data/raw/
+data/processed/
+data/sample/*.parquet
+data/sample/*.jsonl
+!data/sample/.gitkeep
+
+# Model artifacts
+models/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.gguf
+
+# Feast online store
+feast/feature_repo/data/online_store.db
+feast/feature_repo/data/registry.db
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Spark
+spark/metastore_db/
+spark/derby.log
+spark-warehouse/
+
+# Logs
+*.log
+logs/
