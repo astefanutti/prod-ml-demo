@@ -104,6 +104,12 @@ The LLM fine-tuning job (7B model, FSDP across 2 nodes x 4 GPUs) is the natural 
 
 Integration path: Kubeflow Trainer TrainJob -> ClusterTrainingRuntime -> Kueue AppWrapper -> Slurm sbatch -> GPU nodes -> artifacts back to S3 -> Model Registry
 
+## Optional: GPU-Accelerated Spark
+
+The Spark preprocessing jobs (Stage 2) can optionally run on GPUs using the [RAPIDS Accelerator for Apache Spark](https://nvidia.github.io/spark-rapids/). This is a drop-in plugin -- the same PySpark code runs unchanged, with DataFrame operations offloaded to GPU. The feature engineering job (Job A) benefits most, with 10-30x speedups on its heavy groupBy/join/aggregation workload.
+
+See [docs/rapids.md](rapids.md) for per-job analysis, infrastructure requirements, and configuration.
+
 ## Key References
 
 - [Red Hat AI Quickstart Product Recommender](https://developers.redhat.com/articles/2026/01/20/ai-quickstart-product-recommender-openshift-ai)

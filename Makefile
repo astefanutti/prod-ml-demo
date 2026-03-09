@@ -1,6 +1,7 @@
-.PHONY: help data-sample data-full spark-run spark-local feast-apply feast-materialize \
+.PHONY: help data-sample data-full spark-run spark-features-rapids spark-local \
+       feast-apply feast-materialize \
        train-rec train-llm serve serve-rec serve-llm serve-rag demo \
-       build-images push-images deploy clean
+       build-images build-image-spark-rapids push-images deploy clean
 
 PYTHON ?= python
 SPARK_SUBMIT ?= spark-submit
@@ -58,6 +59,9 @@ spark-embeddings-local: ## Run embedding generation locally
 
 spark-run: ## Submit all Spark jobs to OpenShift
 	$(KUBECTL) apply -f infrastructure/openshift/spark-application.yaml -n $(NAMESPACE)
+
+spark-features-rapids: ## Submit RAPIDS GPU-accelerated feature engineering job
+	$(KUBECTL) apply -f infrastructure/openshift/spark-application-rapids.yaml -n $(NAMESPACE)
 
 # ============================================================================
 # Feast Feature Store
@@ -131,6 +135,9 @@ build-images: ## Build all container images
 	podman build -f Containerfile.rec-trainer -t $(REGISTRY)/rec-trainer:latest .
 	podman build -f Containerfile.llm-trainer -t $(REGISTRY)/llm-trainer:latest .
 	podman build -f Containerfile.serving -t $(REGISTRY)/rec-server:latest .
+
+build-image-spark-rapids: ## Build RAPIDS GPU-accelerated Spark image
+	podman build -f Containerfile.spark-rapids -t $(REGISTRY)/spark-jobs-rapids:latest .
 
 push-images: ## Push images to registry
 	podman push $(REGISTRY)/spark-jobs:latest
