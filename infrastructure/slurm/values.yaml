@@ -1,0 +1,95 @@
+# Helm values for Slurm cluster deployment via Slinky operator
+# Source: https://github.com/redhat-hpc/slinky-on-openshift
+#
+# Deploy:
+#   oc adm new-project slurm
+#   oc adm policy add-scc-to-user privileged -n slurm -z default
+#   oc apply -f infrastructure/slurm/slurm-home-pvc.yaml
+#   helm install slurm oci://ghcr.io/slinkyproject/charts/slurm \
+#     --namespace slurm --version 1.0.1 -f infrastructure/slurm/values.yaml \
+#     --set-literal "loginsets.slinky.rootSshAuthorizedKeys=$(cat ~/.ssh/id_ed25519.pub)"
+#
+# Verify:
+#   oc exec -n slurm slurm-controller-0 -c slurmctld -- sinfo
+#   ssh -o ProxyCommand='oc exec -i -n slurm svc/%h -- socat STDIO TCP:localhost:22' root@slurm-login-slinky
+
+configFiles:
+  gres.conf: "AutoDetect=nvidia"
+
+controller:
+  slurmctld:
+    image:
+      repository: quay.io/slinky-on-openshift/slurmctld
+      tag: 25.11.1-centos9-ohpc
+  reconfigure:
+    image:
+      repository: quay.io/slinky-on-openshift/slurmctld
+      tag: 25.11.1-centos9-ohpc
+
+accounting:
+  slurmdbd:
+    image:
+      repository: quay.io/slinky-on-openshift/slurmdbd
+      tag: 25.11.1-centos9-ohpc
+
+restapi:
+  slurmrestd:
+    image:
+      repository: quay.io/slinky-on-openshift/slurmrestd
+      tag: 25.11.1-centos9-ohpc
+
+loginsets:
+  slinky:
+    enabled: true
+    login:
+      image:
+        repository: quay.io/slinky-on-openshift/login
+        tag: 25.11.1-centos9-ohpc
+      securityContext:
+        privileged: true
+      volumeMounts:
+        - name: slurm-home
+          mountPath: /home
+    podSpec:
+      volumes:
+        - name: slurm-home
+          persistentVolumeClaim:
+            claimName: slurm-home
+    # rootSshAuthorizedKeys: pass at deploy time via --set-literal
+
+nodesets:
+  slinky:
+    # Default to 0 — scale up only when running the FSDP demo segment.
+    # GPUs are exclusively allocated to the pod at schedule time, so keeping
+    # workers running idle burns GPU capacity needed by notebooks and Kubeflow jobs.
+    #
+    # Scale up:   oc scale nodeset slurm-worker-slinky --replicas=2 -n slurm
+    # Scale down: oc scale nodeset slurm-worker-slinky --replicas=0 -n slurm
+    replicas: 0
+    # Pin workers to A100 GPU nodes (gx2-80x1280x8a100: 80 vCPU, 1280Gi RAM, 8x A100-80GB)
+    podSpec:
+      nodeSelector:
+        node.kubernetes.io/instance-type: gx2-80x1280x8a100
+      volumes:
+        - name: slurm-home
+          persistentVolumeClaim:
+            claimName: slurm-home
+    slurmd:
+      image:
+        repository: quay.io/slinky-on-openshift/slurmd
+        tag: 25.11.1-centos9-ohpc
+      # 1 GPU per worker = 2 GPUs total across both nodes.
+      # Sufficient for Mistral-7B QLoRA demo (4-bit model fits in ~10GB of an 80GB A100).
+      # Frees 7 GPUs per node for notebooks, Kubeflow Trainer, and RAPIDS Spark.
+      resources:
+        requests:
+          cpu: 8
+          memory: 60Gi
+          nvidia.com/gpu: 1
+        limits:
+          cpu: 8
+          memory: 60Gi
+          nvidia.com/gpu: 1
+      volumeMounts:
+        - name: slurm-home
+          mountPath: /home
