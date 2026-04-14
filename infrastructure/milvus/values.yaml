@@ -1,0 +1,62 @@
+# Milvus standalone Helm values for SmartShop demo
+# Chart: milvus/milvus v4.2.58 (app v2.5.16)
+# Install: helm install milvus milvus/milvus -n smartshop --version 4.2.58 -f values.yaml
+#
+# Prerequisites:
+#   1. milvus bucket must exist in MinIO:
+#      AWS_ACCESS_KEY_ID=minio AWS_SECRET_ACCESS_KEY=minio123 \
+#        aws s3 mb s3://milvus \
+#        --endpoint-url https://minio-s3-smartshop.apps.oai-kft-ibm.ibm.rh-ods.com \
+#        --no-verify-ssl
+#   2. milvus PVC must exist (created on first install, kept via helm.sh/resource-policy: keep):
+#      oc get pvc milvus -n smartshop
+#   3. milvus ServiceAccount with anyuid SCC must exist:
+#      oc create sa milvus -n smartshop
+#      oc adm policy add-scc-to-user anyuid -z milvus -n smartshop
+#   4. After install, patch SA on etcd StatefulSet and standalone Deployment:
+#      oc patch statefulset milvus-etcd -n smartshop \
+#        --type=merge -p '{"spec":{"template":{"spec":{"serviceAccountName":"milvus"}}}}'
+#      oc patch deployment milvus-standalone -n smartshop \
+#        --type=merge -p '{"spec":{"template":{"spec":{"serviceAccountName":"milvus"}}}}'
+#   5. Override injected MinIO env vars (Kubernetes injects MINIO_PORT etc. from the minio
+#      Service in the same namespace, which overrides Milvus config — known upstream issue
+#      https://github.com/zilliztech/milvus-helm/issues/99):
+#      oc set env deployment/milvus-standalone -n smartshop \
+#        MINIO_ADDRESS=minio.smartshop.svc.cluster.local:9000 \
+#        MINIO_PORT="" MINIO_SERVICE_HOST="" MINIO_SERVICE_PORT="" MINIO_SERVICE_PORT_API=""
+
+cluster:
+  enabled: false
+
+minio:
+  enabled: false
+
+# NOTE: externalS3.host must include the port (host:port) — NOT just the hostname.
+# Kubernetes injects MINIO_PORT env var from the minio Service in the same namespace,
+# which causes Milvus to construct a malformed endpoint URL. Setting host:port here
+# and explicitly blanking the injected env vars is the documented workaround.
+externalS3:
+  enabled: true
+  host: "minio.smartshop.svc.cluster.local:9000"
+  port: "9000"
+  accessKey: "minio"
+  secretKey: "minio123"
+  useSSL: false
+  bucketName: "milvus"
+
+pulsarv3:
+  enabled: false
+
+pulsar:
+  enabled: false
+
+etcd:
+  replicaCount: 1
+  persistence:
+    storageClass: ibmc-vpc-block-10iops-tier
+    size: 10Gi
+
+standalone:
+  persistence:
+    persistentVolumeClaim:
+      existingClaim: "milvus"

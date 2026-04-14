@@ -1,0 +1,172 @@
+---
+# Redis standalone for Feast online feature store
+# Image: quay.io/opstree/redis:v7.0.5 (Apache 2.0, OpenShift-compatible, non-root UID 1000)
+# Namespace: smartshop
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-credentials
+  namespace: smartshop
+stringData:
+  password: "smartshop-redis-2026"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: smartshop
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ibmc-vpc-block-10iops-tier
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: smartshop
+  labels:
+    app: redis
+    component: online-store
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+        component: online-store
+    spec:
+      containers:
+      - name: redis
+        image: quay.io/opstree/redis:v7.0.5
+        ports:
+        - containerPort: 6379
+        command: ["redis-server"]
+        args:
+        - "--requirepass"
+        - "$(REDIS_PASSWORD)"
+        - "--appendonly"
+        - "yes"
+        - "--save"
+        - "60 1"
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: password
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: redis-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: smartshop
+  labels:
+    app: redis
+    component: online-store
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# RedisInsight — Redis web UI
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redisinsight
+  namespace: smartshop
+  labels:
+    app: redisinsight
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redisinsight
+  template:
+    metadata:
+      labels:
+        app: redisinsight
+    spec:
+      containers:
+      - name: redisinsight
+        image: redis/redisinsight:latest
+        ports:
+        - containerPort: 5540
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redisinsight
+  namespace: smartshop
+  labels:
+    app: redisinsight
+spec:
+  selector:
+    app: redisinsight
+  ports:
+  - port: 5540
+    targetPort: 5540
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: redisinsight
+  namespace: smartshop
+spec:
+  to:
+    kind: Service
+    name: redisinsight
+  port:
+    targetPort: 5540
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
