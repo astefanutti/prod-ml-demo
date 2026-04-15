@@ -7,8 +7,17 @@ set -euo pipefail
 NAMESPACE=${1:-smartshop}
 CHART_VERSION="4.2.58"
 MINIO_ENDPOINT=${2:-"http://minio.${NAMESPACE}.svc.cluster.local:9000"}
-MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-"<your-minio-access-key>"}
-MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-"<your-minio-secret-key>"}
+
+# Load .env from repo root if not already set in environment
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../../.env"
+if [ -f "${ENV_FILE}" ] && [ -z "${MINIO_ACCESS_KEY}" ]; then
+  # shellcheck disable=SC1090
+  set -a; . "${ENV_FILE}"; set +a
+fi
+
+: "${MINIO_ACCESS_KEY:?'MINIO_ACCESS_KEY not set. Copy .env.example to .env and fill in values.'}"
+: "${MINIO_SECRET_KEY:?'MINIO_SECRET_KEY not set. Copy .env.example to .env and fill in values.'}"
 
 echo "==> Adding Milvus Helm repo..."
 helm repo add milvus https://zilliztech.github.io/milvus-helm/ --force-update

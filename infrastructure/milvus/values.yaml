@@ -39,8 +39,8 @@ externalS3:
   enabled: true
   host: "minio.smartshop.svc.cluster.local:9000"
   port: "9000"
-  accessKey: "<your-minio-access-key>"
-  secretKey: "<your-minio-secret-key>"
+  accessKey: "${MINIO_ACCESS_KEY}"
+  secretKey: "${MINIO_SECRET_KEY}"
   useSSL: false
   bucketName: "milvus"
 

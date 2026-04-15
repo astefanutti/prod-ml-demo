@@ -12,9 +12,9 @@ metadata:
   name: postgres-credentials
   namespace: smartshop
 stringData:
-  POSTGRESQL_USER: "<your-pg-user>"
-  POSTGRESQL_PASSWORD: "<your-pg-password>"
-  POSTGRESQL_DATABASE: mlflow
+  POSTGRESQL_USER: "${PG_USER}"
+  POSTGRESQL_PASSWORD: "${PG_PASSWORD}"
+  POSTGRESQL_DATABASE: "${PG_DATABASE}"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

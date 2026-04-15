@@ -8,7 +8,7 @@ metadata:
   name: redis-credentials
   namespace: smartshop
 stringData:
-  password: "<your-redis-password>"
+  password: "${REDIS_PASSWORD}"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
