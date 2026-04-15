@@ -639,7 +639,7 @@ oc get pods -n redhat-ods-applications | grep mlflow
 oc get route mlflow -n redhat-ods-applications -o jsonpath='{.spec.host}'
 ```
 
-![MLflow dashboard running on RHOAI](./assets/Screenshot%202026-04-15%20at%2011.29.43%20PM.png)
+![MLflow dashboard running on RHOAI](./assets/mlflow-dashboard.png)
 
 ---
 
