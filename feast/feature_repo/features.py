@@ -4,6 +4,10 @@ Defines three feature views:
   1. user_features - Per-user aggregates from review history
   2. item_features - Per-item aggregates from reviews + metadata
   3. review_embeddings - Vector embeddings for RAG similarity search
+
+Data sources live in MinIO (S3-compatible). Set FEAST_S3_ENDPOINT_URL or
+AWS_ENDPOINT_URL_S3=http://minio.smartshop.svc.cluster.local:9000 in the
+serving environment (the Feast operator injects this via envFrom).
 """
 
 from datetime import timedelta
@@ -28,20 +32,22 @@ review = Entity(
     description="Unique review identifier for embedding lookup",
 )
 
-# -- Data Sources --
+# -- Data Sources (MinIO / S3) --
+# Paths are populated by the Spark ETL job (infrastructure/openshift/spark-application-rapids.yaml).
+# `feast apply` registers the schema even before data exists; `feast materialize` reads the data.
 
 user_features_source = FileSource(
-    path="data/user_features.parquet",
+    path="s3://smartshop-features/user_features/",
     timestamp_field="event_timestamp",
 )
 
 item_features_source = FileSource(
-    path="data/item_features.parquet",
+    path="s3://smartshop-features/item_features/",
     timestamp_field="event_timestamp",
 )
 
 review_embeddings_source = FileSource(
-    path="data/review_embeddings.parquet",
+    path="s3://smartshop-embeddings/review_embeddings/",
     timestamp_field="event_timestamp",
 )
 

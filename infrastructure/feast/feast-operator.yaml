@@ -1,26 +1,99 @@
 ---
-# Feast operator FeatureStore CR for OpenShift
-# Manages Feast server lifecycle, online/offline stores
-apiVersion: feast.dev/v1alpha1
+# MinIO S3 credentials injected into all Feast server pods.
+# Feast uses AWS_ENDPOINT_URL_S3 (fsspec/pyarrow) for the custom MinIO endpoint.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-s3-credentials
+  namespace: smartshop
+stringData:
+  AWS_ACCESS_KEY_ID: "minio"
+  AWS_SECRET_ACCESS_KEY: "minio123"
+  AWS_ENDPOINT_URL_S3: "http://minio.smartshop.svc.cluster.local:9000"
+  AWS_DEFAULT_REGION: "us-east-1"
+  AWS_S3_FORCE_PATH_STYLE: "true"
+---
+# Redis online store config. The Feast operator reads the key matching the store
+# type ("redis") and merges it into the generated feature_store.yaml.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-redis-secret
+  namespace: smartshop
+stringData:
+  redis: |
+    type: redis
+    connection_string: "redis.smartshop.svc.cluster.local:6379,password=smartshop-redis-2026"
+---
+# FeatureStore CR — deployed by the RHOAI Feast Operator (feast.dev/v1, Feast 0.60.0).
+#
+# Registry   : NFS shared PVC  → /feast-data/feast/registry.db
+# Offline    : dask (file/parquet) reading s3://smartshop-features/ from MinIO
+# Online     : Redis (password auth via feast-redis-secret)
+# Project src: GitHub repo, feast/feature_repo/ sub-directory
+apiVersion: feast.dev/v1
 kind: FeatureStore
 metadata:
   name: smartshop-feast
   namespace: smartshop
 spec:
   feastProject: smartshop
+
+  # Clone our public repo; featureRepoPath points to feast/feature_repo/
+  # which contains features.py with S3-based FileSources.
+  feastProjectDir:
+    git:
+      url: https://github.com/abhijeet-dhumal/prod-ml-demo.git
+      ref: main
+      featureRepoPath: feast/feature_repo
+
   services:
+    # ---- Offline store ----
+    # dask type — reads Parquet from S3 (MinIO). No local PVC needed; the
+    # offline server processes data in-memory via dask workers.
     offlineStore:
       persistence:
         file:
-          path: s3://smartshop/feast/offline/
-          s3AdditionalKwargs:
-            endpoint_url: "http://minio.smartshop.svc.cluster.local:9000"
+          type: dask
+          pvc:
+            ref:
+              name: smartshop-shared-storage
+            mountPath: /feast-offline
+            path: cache
+      server:
+        envFrom:
+          - secretRef:
+              name: feast-s3-credentials
+
+    # ---- Online store (Redis) ----
     onlineStore:
       persistence:
         store:
           type: redis
-          redis:
-            connectionString: "redis.smartshop.svc.cluster.local:6379"
+          secretRef:
+            name: feast-redis-secret
+      server:
+        envFrom:
+          - secretRef:
+              name: feast-s3-credentials
+
+    # ---- Registry (NFS PVC) ----
+    # Uses the shared NFS PVC so registry.db persists across pod restarts and
+    # is visible to all components (offline server, online server, Spark jobs).
     registry:
       local:
-        path: s3://smartshop/feast/registry.db
+        persistence:
+          file:
+            path: registry.db
+            pvc:
+              ref:
+                name: smartshop-shared-storage
+              mountPath: /feast-data/feast
+        server:
+          restAPI: true
+          envFrom:
+            - secretRef:
+                name: feast-s3-credentials
+
+    # ---- UI (optional, useful for Summit demo) ----
+    ui: {}
