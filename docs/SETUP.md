@@ -393,10 +393,10 @@ oc patch deployment minio -n smartshop --type=json -p='[
    "value": "smartshop-shared-storage"}
 ]'
 
-# Set simple credentials
+# Set credentials (replace with your chosen values)
 oc create secret generic minio-root-user \
-  --from-literal=MINIO_ROOT_USER=minio \
-  --from-literal=MINIO_ROOT_PASSWORD=minio123 \
+  --from-literal=MINIO_ROOT_USER=<your-minio-access-key> \
+  --from-literal=MINIO_ROOT_PASSWORD=<your-minio-secret-key> \
   -n smartshop --dry-run=client -o yaml | oc apply -f -
 
 # Scale back up
@@ -413,7 +413,7 @@ oc delete pvc minio -n smartshop
 export S3=https://$(oc get route minio-s3 -n smartshop -o jsonpath='{.spec.host}')
 
 for bucket in smartshop-raw smartshop-features smartshop-models smartshop-embeddings milvus; do
-  AWS_ACCESS_KEY_ID=minio AWS_SECRET_ACCESS_KEY=minio123 \
+  AWS_ACCESS_KEY_ID=<your-minio-access-key> AWS_SECRET_ACCESS_KEY=<your-minio-secret-key> \
     aws s3 mb s3://$bucket --endpoint-url $S3 --no-verify-ssl
 done
 ```
@@ -445,14 +445,14 @@ oc rollout status deployment/redis deployment/redisinsight -n smartshop
 
 This creates:
 - `redis-data` PVC — 10Gi, `nfs-csi`, `ReadWriteMany` (RWO would also work — only one Redis pod mounts it)
-- `redis-credentials` Secret — password `smartshop-redis-2026`
+- `redis-credentials` Secret — password from `infrastructure/redis/redis.yaml`
 - Route for RedisInsight UI
 
 **Verify:**
 
 ```bash
 oc exec -it deployment/redis -n smartshop -- \
-  redis-cli -a smartshop-redis-2026 ping
+  redis-cli -a <your-redis-password> ping
 # PONG
 ```
 
@@ -584,9 +584,12 @@ Point MLflow's backend store at the new PostgreSQL instance.
 
 ```bash
 POSTGRES_IP=$(oc get svc postgres -n smartshop -o jsonpath='{.spec.clusterIP}')
+# Use the same user/password set in infrastructure/mlflow/postgres.yaml
+PG_USER=<your-pg-user>
+PG_PASS=<your-pg-password>
 
 oc create secret generic mlflow-postgres-secret \
-  --from-literal=uri="postgresql+psycopg2://feast:feast@${POSTGRES_IP}:5432/mlflow?sslmode=disable" \
+  --from-literal=uri="postgresql+psycopg2://${PG_USER}:${PG_PASS}@${POSTGRES_IP}:5432/mlflow?sslmode=disable" \
   -n redhat-ods-applications \
   --dry-run=client -o yaml | oc apply -f -
 ```
@@ -597,8 +600,8 @@ MLflow writes artifacts to MinIO — the S3 credentials must be in `redhat-ods-a
 
 ```bash
 oc create secret generic mlflow-s3-credentials \
-  --from-literal=AWS_ACCESS_KEY_ID=minio \
-  --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \
+  --from-literal=AWS_ACCESS_KEY_ID=<your-minio-access-key> \
+  --from-literal=AWS_SECRET_ACCESS_KEY=<your-minio-secret-key> \
   --from-literal=MLFLOW_S3_ENDPOINT_URL=http://minio.smartshop.svc.cluster.local:9000 \
   --from-literal=AWS_DEFAULT_REGION=us-east-1 \
   -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
@@ -757,10 +760,10 @@ oc get inferenceservice -n smartshop -w
 
 | Component | Endpoint | Credentials |
 |---|---|---|
-| MinIO Console | `https://minio-console-smartshop.apps.<cluster>/` | `minio` / `minio123` |
-| MinIO S3 (internal) | `http://minio.smartshop.svc.cluster.local:9000` | `minio` / `minio123` |
-| MinIO S3 (external) | `https://minio-s3-smartshop.apps.<cluster>/` | `minio` / `minio123` |
-| Redis | `redis.smartshop.svc.cluster.local:6379` | Secret: `redis-credentials`, password `smartshop-redis-2026` |
+| MinIO Console | `https://minio-console-smartshop.apps.<cluster>/` | Secret: `minio-root-user` |
+| MinIO S3 (internal) | `http://minio.smartshop.svc.cluster.local:9000` | Secret: `smartshop-credentials` |
+| MinIO S3 (external) | `https://minio-s3-smartshop.apps.<cluster>/` | Secret: `smartshop-credentials` |
+| Redis | `redis.smartshop.svc.cluster.local:6379` | Secret: `redis-credentials` |
 | RedisInsight UI | `https://redisinsight-smartshop.apps.<cluster>/` | Add database on first open |
 | Milvus gRPC | `milvus.smartshop.svc.cluster.local:19530` | — |
 | Milvus REST | `milvus.smartshop.svc.cluster.local:9091` | — |

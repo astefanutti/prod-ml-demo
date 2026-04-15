@@ -1,10 +1,11 @@
 # Local development config — the Feast operator CR overrides these backends in-cluster.
 # For local `feast apply`, set:
 #   export AWS_ENDPOINT_URL_S3=https://minio-s3-smartshop.apps.<cluster-domain>
-#   export AWS_ACCESS_KEY_ID=minio
-#   export AWS_SECRET_ACCESS_KEY=minio123
+#   export AWS_ACCESS_KEY_ID=<your-minio-access-key>
+#   export AWS_SECRET_ACCESS_KEY=<your-minio-secret-key>
 #   export REDIS_HOST=<port-forward-host>
 #   export REDIS_PORT=6379
+#   export REDIS_PASSWORD=<your-redis-password>
 project: smartshop
 provider: local
 registry:

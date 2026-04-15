@@ -4,7 +4,7 @@
 #
 # Prerequisites:
 #   1. milvus bucket must exist in MinIO:
-#      AWS_ACCESS_KEY_ID=minio AWS_SECRET_ACCESS_KEY=minio123 \
+#      AWS_ACCESS_KEY_ID=<your-minio-access-key> AWS_SECRET_ACCESS_KEY=<your-minio-secret-key> \
 #        aws s3 mb s3://milvus \
 #        --endpoint-url https://minio-s3-smartshop.apps.<cluster-domain> \
 #        --no-verify-ssl
@@ -39,8 +39,8 @@ externalS3:
   enabled: true
   host: "minio.smartshop.svc.cluster.local:9000"
   port: "9000"
-  accessKey: "minio"
-  secretKey: "minio123"
+  accessKey: "<your-minio-access-key>"
+  secretKey: "<your-minio-secret-key>"
   useSSL: false
   bucketName: "milvus"
 

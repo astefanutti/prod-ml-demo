@@ -12,8 +12,8 @@
 #
 # Create the S3 credentials secret in redhat-ods-applications:
 #   oc create secret generic mlflow-s3-credentials \
-#     --from-literal=AWS_ACCESS_KEY_ID=minio \
-#     --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \
+#     --from-literal=AWS_ACCESS_KEY_ID=<your-minio-access-key> \
+#     --from-literal=AWS_SECRET_ACCESS_KEY=<your-minio-secret-key> \
 #     --from-literal=MLFLOW_S3_ENDPOINT_URL=http://minio.smartshop.svc.cluster.local:9000 \
 #     --from-literal=AWS_DEFAULT_REGION=us-east-1 \
 #     -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
@@ -23,8 +23,9 @@
 # redhat-ods-applications due to OVN-K NetworkPolicy CNAME resolution restrictions.
 # Get the ClusterIP first:
 #   POSTGRES_IP=$(oc get svc postgres -n smartshop -o jsonpath='{.spec.clusterIP}')
+#   PG_USER=<your-pg-user> PG_PASS=<your-pg-password>
 #   oc create secret generic mlflow-postgres-secret \
-#     --from-literal=uri="postgresql+psycopg2://feast:feast@${POSTGRES_IP}:5432/mlflow?sslmode=disable" \
+#     --from-literal=uri="postgresql+psycopg2://${PG_USER}:${PG_PASS}@${POSTGRES_IP}:5432/mlflow?sslmode=disable" \
 #     -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
 apiVersion: mlflow.opendatahub.io/v1
 kind: MLflow

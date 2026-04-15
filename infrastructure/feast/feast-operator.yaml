@@ -7,8 +7,8 @@ metadata:
   name: feast-s3-credentials
   namespace: smartshop
 stringData:
-  AWS_ACCESS_KEY_ID: "minio"
-  AWS_SECRET_ACCESS_KEY: "minio123"
+  AWS_ACCESS_KEY_ID: "<your-minio-access-key>"
+  AWS_SECRET_ACCESS_KEY: "<your-minio-secret-key>"
   AWS_ENDPOINT_URL_S3: "http://minio.smartshop.svc.cluster.local:9000"
   AWS_DEFAULT_REGION: "us-east-1"
   AWS_S3_FORCE_PATH_STYLE: "true"
@@ -23,7 +23,7 @@ metadata:
 stringData:
   redis: |
     type: redis
-    connection_string: "redis.smartshop.svc.cluster.local:6379,password=smartshop-redis-2026"
+    connection_string: "redis.smartshop.svc.cluster.local:6379,password=<your-redis-password>"
 ---
 # FeatureStore CR — deployed by the RHOAI Feast Operator (feast.dev/v1, Feast 0.60.0).
 #

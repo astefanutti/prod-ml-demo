@@ -7,6 +7,8 @@ set -euo pipefail
 NAMESPACE=${1:-smartshop}
 CHART_VERSION="4.2.58"
 MINIO_ENDPOINT=${2:-"http://minio.${NAMESPACE}.svc.cluster.local:9000"}
+MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-"<your-minio-access-key>"}
+MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-"<your-minio-secret-key>"}
 
 echo "==> Adding Milvus Helm repo..."
 helm repo add milvus https://zilliztech.github.io/milvus-helm/ --force-update
@@ -30,7 +32,7 @@ spec:
 EOF
 
 echo "==> Creating milvus bucket in MinIO..."
-AWS_ACCESS_KEY_ID=minio AWS_SECRET_ACCESS_KEY=minio123 \
+AWS_ACCESS_KEY_ID="${MINIO_ACCESS_KEY}" AWS_SECRET_ACCESS_KEY="${MINIO_SECRET_KEY}" \
   aws s3 mb s3://milvus \
   --endpoint-url "${MINIO_ENDPOINT}" \
   --no-verify-ssl 2>/dev/null || echo "    bucket already exists, skipping"
