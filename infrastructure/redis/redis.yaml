@@ -16,8 +16,8 @@ metadata:
   name: redis-data
   namespace: smartshop
 spec:
-  accessModes: [ReadWriteOnce]
-  storageClassName: ibmc-vpc-block-10iops-tier
+  accessModes: [ReadWriteMany]
+  storageClassName: nfs-csi
   resources:
     requests:
       storage: 10Gi

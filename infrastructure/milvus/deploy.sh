@@ -1,15 +1,33 @@
 #!/usr/bin/env bash
 # Deploy Milvus standalone for SmartShop demo
-# Usage: ./deploy.sh [namespace]
+# Usage: ./deploy.sh [namespace] [minio-route-host]
+#   minio-route-host defaults to the cluster-local service (works for in-cluster bucket creation)
 set -euo pipefail
 
 NAMESPACE=${1:-smartshop}
 CHART_VERSION="4.2.58"
-MINIO_ENDPOINT="https://minio-s3-${NAMESPACE}.apps.oai-kft-ibm.ibm.rh-ods.com"
+MINIO_ENDPOINT=${2:-"http://minio.${NAMESPACE}.svc.cluster.local:9000"}
 
 echo "==> Adding Milvus Helm repo..."
 helm repo add milvus https://zilliztech.github.io/milvus-helm/ --force-update
 helm repo update milvus
+
+echo "==> Pre-creating milvus standalone PVC (nfs-csi, required before Helm install)..."
+oc apply -n "${NAMESPACE}" -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: milvus
+  namespace: ${NAMESPACE}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: nfs-csi
+  resources:
+    requests:
+      storage: 50Gi
+EOF
 
 echo "==> Creating milvus bucket in MinIO..."
 AWS_ACCESS_KEY_ID=minio AWS_SECRET_ACCESS_KEY=minio123 \

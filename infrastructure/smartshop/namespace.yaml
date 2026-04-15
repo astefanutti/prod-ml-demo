@@ -5,3 +5,4 @@ metadata:
   name: smartshop
   labels:
     app.kubernetes.io/part-of: smartshop-ai
+    opendatahub.io/dashboard: "true"    # required: makes this a Data Science Project visible in RHOAI dashboard

@@ -136,9 +136,3 @@ spec:
                       emptyDir:
                         medium: Memory
                         sizeLimit: "32Gi"
-  # Kueue integration for Slurm dispatch
-  podSetOverrides:
-    - targetReplicatedJobs:
-        - worker
-      annotations:
-        kueue.x-k8s.io/queue-name: slurm-gpu-queue

@@ -6,7 +6,7 @@
 #   1. milvus bucket must exist in MinIO:
 #      AWS_ACCESS_KEY_ID=minio AWS_SECRET_ACCESS_KEY=minio123 \
 #        aws s3 mb s3://milvus \
-#        --endpoint-url https://minio-s3-smartshop.apps.oai-kft-ibm.ibm.rh-ods.com \
+#        --endpoint-url https://minio-s3-smartshop.apps.<cluster-domain> \
 #        --no-verify-ssl
 #   2. milvus PVC must exist (created on first install, kept via helm.sh/resource-policy: keep):
 #      oc get pvc milvus -n smartshop
@@ -53,8 +53,13 @@ pulsar:
 etcd:
   replicaCount: 1
   persistence:
-    storageClass: ibmc-vpc-block-10iops-tier
+    storageClass: nfs-csi
     size: 10Gi
+  # NFS does not guarantee fsync latency — suppress warnings for demo use only.
+  # Never set this in production.
+  extraEnvVars:
+    - name: ETCD_UNSAFE_NO_FSYNC
+      value: "true"
 
 standalone:
   persistence:

@@ -149,9 +149,14 @@ push-images: ## Push images to registry
 # Infrastructure
 # ============================================================================
 
-deploy: ## Deploy all infrastructure to OpenShift
-	$(KUBECTL) apply -f infrastructure/openshift/namespace.yaml
-	$(KUBECTL) apply -f infrastructure/slurm/kueue-config.yaml
+deploy: ## Deploy all infrastructure to OpenShift (see docs/SETUP.md for full guide)
+	$(KUBECTL) apply -f infrastructure/smartshop/namespace.yaml
+	$(KUBECTL) apply -f infrastructure/smartshop/shared-storage.yaml
+	$(KUBECTL) apply -f infrastructure/smartshop/credentials.yaml
+	$(KUBECTL) apply -f infrastructure/smartshop/spark-rbac.yaml
+	$(KUBECTL) apply -f infrastructure/redis/redis.yaml
+	$(KUBECTL) apply -f infrastructure/mlflow/postgres.yaml
+	$(KUBECTL) apply -f infrastructure/feast/feast-operator.yaml
 
 clean: ## Clean generated data and models
 	rm -rf data/processed/ data/sample/*.parquet models/

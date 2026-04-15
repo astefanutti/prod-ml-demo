@@ -36,6 +36,8 @@ kind: FeatureStore
 metadata:
   name: smartshop-feast
   namespace: smartshop
+  labels:
+    feature-store-ui: enabled    # required: surfaces this FeatureStore in the RHOAI dashboard
 spec:
   feastProject: smartshop
 
@@ -44,22 +46,17 @@ spec:
   feastProjectDir:
     git:
       url: https://github.com/abhijeet-dhumal/prod-ml-demo.git
-      ref: main
+      ref: refine-cluster-infra-setup
       featureRepoPath: feast/feature_repo
 
   services:
     # ---- Offline store ----
-    # dask type — reads Parquet from S3 (MinIO). No local PVC needed; the
-    # offline server processes data in-memory via dask workers.
+    # dask type — reads Parquet from S3 (MinIO) in-memory; no local PVC needed.
+    # S3 credentials injected so fsspec/pyarrow can reach MinIO.
     offlineStore:
       persistence:
         file:
           type: dask
-          pvc:
-            ref:
-              name: smartshop-shared-storage
-            mountPath: /feast-offline
-            path: cache
       server:
         envFrom:
           - secretRef:
@@ -77,18 +74,22 @@ spec:
           - secretRef:
               name: feast-s3-credentials
 
-    # ---- Registry (NFS PVC) ----
-    # Uses the shared NFS PVC so registry.db persists across pod restarts and
-    # is visible to all components (offline server, online server, Spark jobs).
+    # ---- Registry ----
+    # Dedicated 1Gi NFS PVC — avoids double-mounting smartshop-shared-storage
+    # in the same pod (NFS CSI can't remount the same PV twice per pod).
     registry:
       local:
         persistence:
           file:
             path: registry.db
             pvc:
-              ref:
-                name: smartshop-shared-storage
-              mountPath: /feast-data/feast
+              create:
+                accessModes: [ReadWriteOnce]
+                storageClassName: nfs-csi
+                resources:
+                  requests:
+                    storage: 1Gi
+              mountPath: /feast-registry
         server:
           restAPI: true
           envFrom:
