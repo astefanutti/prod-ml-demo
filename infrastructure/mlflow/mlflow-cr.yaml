@@ -18,9 +18,13 @@
 #     --from-literal=AWS_DEFAULT_REGION=us-east-1 \
 #     -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
 #
-# Update the backend secret to new postgres location:
+# Update the backend secret to new postgres location.
+# NOTE: Use the postgres Service ClusterIP directly — DNS-based hostnames fail from
+# redhat-ods-applications due to OVN-K NetworkPolicy CNAME resolution restrictions.
+# Get the ClusterIP first:
+#   POSTGRES_IP=$(oc get svc postgres -n smartshop -o jsonpath='{.spec.clusterIP}')
 #   oc create secret generic mlflow-postgres-secret \
-#     --from-literal=uri="postgresql+psycopg2://feast:feast@postgres.smartshop.svc.cluster.local:5432/mlflow?sslmode=disable" \
+#     --from-literal=uri="postgresql+psycopg2://feast:feast@${POSTGRES_IP}:5432/mlflow?sslmode=disable" \
 #     -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
 apiVersion: mlflow.opendatahub.io/v1
 kind: MLflow

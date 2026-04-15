@@ -575,16 +575,48 @@ The manifest at `infrastructure/mlflow/postgres.yaml` creates:
 
 ### 9b — Update MLflow Backend Secret
 
-Point MLflow's backend store at the new PostgreSQL instance:
+Point MLflow's backend store at the new PostgreSQL instance.
+
+> **OVN-K DNS gotcha:** MLflow's `NetworkPolicy` in `redhat-ods-applications` has
+> `policyTypes: [Ingress, Egress]` (operator-managed). DNS lookups for cross-namespace
+> CNAME chains fail under OVN-K even though port 53 is listed in the egress rules.
+> Use the postgres Service **ClusterIP** directly — TCP connectivity works fine.
 
 ```bash
+POSTGRES_IP=$(oc get svc postgres -n smartshop -o jsonpath='{.spec.clusterIP}')
+
 oc create secret generic mlflow-postgres-secret \
-  --from-literal=uri="postgresql+psycopg2://feast:feast@postgres.smartshop.svc.cluster.local:5432/mlflow?sslmode=disable" \
+  --from-literal=uri="postgresql+psycopg2://feast:feast@${POSTGRES_IP}:5432/mlflow?sslmode=disable" \
   -n redhat-ods-applications \
   --dry-run=client -o yaml | oc apply -f -
 ```
 
-### 9c — Verify MLflow is Running
+### 9c — Create S3 Credentials and Patch MLflow CR
+
+MLflow writes artifacts to MinIO — the S3 credentials must be in `redhat-ods-applications`:
+
+```bash
+oc create secret generic mlflow-s3-credentials \
+  --from-literal=AWS_ACCESS_KEY_ID=minio \
+  --from-literal=AWS_SECRET_ACCESS_KEY=minio123 \
+  --from-literal=MLFLOW_S3_ENDPOINT_URL=http://minio.smartshop.svc.cluster.local:9000 \
+  --from-literal=AWS_DEFAULT_REGION=us-east-1 \
+  -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
+```
+
+Patch the MLflow CR to use S3 as artifact destination (see `infrastructure/mlflow/mlflow-cr.yaml`):
+
+```bash
+oc patch mlflow mlflow -n redhat-ods-applications --type=merge -p '{
+  "spec": {
+    "artifactsDestination": "s3://smartshop-models",
+    "serveArtifacts": true,
+    "envFrom": [{"secretRef": {"name": "mlflow-s3-credentials"}}]
+  }
+}'
+```
+
+### 9d — Verify MLflow is Running
 
 ```bash
 oc rollout restart deployment/mlflow -n redhat-ods-applications
@@ -594,9 +626,9 @@ oc get pods -n redhat-ods-applications | grep mlflow
 # mlflow-xxxxx   2/2   Running
 ```
 
-> **Current status:** MLflow was crash-looping (37 restarts) because the backend secret
-> pointed to `postgres.feast-trainer-demo.svc.cluster.local` — an old namespace that
-> no longer exists. Steps 9a–9c above fix this.
+> **Fixed:** MLflow was crash-looping because the backend secret pointed to
+> `postgres.feast-trainer-demo.svc.cluster.local` — an old namespace that no longer exists.
+> Steps 9a–9d above resolve this.
 
 **MLflow UI:**
 
