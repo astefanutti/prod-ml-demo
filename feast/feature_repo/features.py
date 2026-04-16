@@ -12,23 +12,36 @@ serving environment (the Feast operator injects this via envFrom).
 
 from datetime import timedelta
 
+import os
+
 from feast import Entity, FeatureView, Field, FileSource
 from feast.types import Array, Float32, Float64, Int64, String
+from feast.value_type import ValueType
+
+# PyArrow S3FileSystem ignores AWS_ENDPOINT_URL_S3 when endpoint_override is not
+# passed explicitly. Always read the endpoint from the environment so that both
+# local dev (external URL) and in-cluster (internal svc URL) work transparently.
+_S3_ENDPOINT = os.environ.get(
+    "AWS_ENDPOINT_URL_S3", "http://minio.smartshop.svc.cluster.local:9000"
+)
 
 # -- Entities --
 
 user = Entity(
     name="user_id",
+    value_type=ValueType.STRING,
     description="Unique user identifier from Amazon Reviews",
 )
 
 item = Entity(
     name="item_id",
-    description="Product ASIN identifier",
+    value_type=ValueType.STRING,
+    description="Product ASIN identifier (parent_asin)",
 )
 
 review = Entity(
     name="review_id",
+    value_type=ValueType.STRING,
     description="Unique review identifier for embedding lookup",
 )
 
@@ -39,16 +52,19 @@ review = Entity(
 user_features_source = FileSource(
     path="s3://smartshop-features/user_features/",
     timestamp_field="event_timestamp",
+    s3_endpoint_override=_S3_ENDPOINT,
 )
 
 item_features_source = FileSource(
     path="s3://smartshop-features/item_features/",
     timestamp_field="event_timestamp",
+    s3_endpoint_override=_S3_ENDPOINT,
 )
 
 review_embeddings_source = FileSource(
     path="s3://smartshop-embeddings/review_embeddings/",
     timestamp_field="event_timestamp",
+    s3_endpoint_override=_S3_ENDPOINT,
 )
 
 # -- Feature Views --
