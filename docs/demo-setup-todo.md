@@ -203,6 +203,57 @@
 
 ---
 
+## Phase 11 — Code & Infra Quality Fixes (from review)
+> Identified via full codebase review — fix before training/serving runs are attempted
+
+### 🔴 Critical (silent failures / demo breaks)
+
+- [ ] **Fix `hf-credentials` secret key mismatch** — `make setup-secrets` creates key `HF_TOKEN` but `trainjobs.yaml` + `inferenceservices.yaml` reference key `token`
+  - Fix: change Makefile `--from-literal=HF_TOKEN=` → `--from-literal=token=`; recreate secret on cluster
+- [ ] **Standardize S3 bucket names** — inconsistent across 5+ files:
+  - `spark-application.yaml` uses `smartshop-raw`, `smartshop-features`
+  - `spark-application-rapids.yaml` uses `smartshop/raw`, `smartshop/features`
+  - `e2e_pipeline.py`, `trainjobs.yaml`, `sbatch_llm_finetune.sh` use `smartshop/features`, `smartshop/models`
+  - Fix: canonical buckets = `smartshop-raw`, `smartshop-features`, `smartshop-embeddings`, `smartshop-models` everywhere
+- [ ] **Fix RAG → LLM URL/contract mismatch** — `serving/rag/server.py` calls `POST /v1/completions` (OpenAI-style) but `serving/llm/server.py` exposes `POST /v1/summarize` with its own JSON schema
+  - Fix: point `LLM_URL` at `/v1/summarize`, send `{"product_name": ..., "review_text": ...}`
+- [ ] **Fix TrainJob DDP topology** — `trainjobs.yaml` has `numNodes: 4, nproc_per_node=1` but README/docs say 1 node × 4 GPUs
+  - Fix: `numNodes: 1`, `nproc_per_node=4`
+- [ ] **Fix rec model dimension mismatch** — serving pads item features with zeros to reach dim=8; training uses 6 item columns → checkpoint mismatch
+  - Fix: save `user_feat_dim`/`item_feat_dim` in checkpoint dict at train time; load from checkpoint at serve time; remove padding
+
+### 🟠 High (correctness / performance)
+
+- [ ] **Remove `sys.path.insert` hack in rec server** — `serving/recommendation/server.py` hacks `sys.path` to import `model.py` from training dir
+  - Fix: copy `model.py` into `serving/recommendation/` and update Containerfile, or extract to shared `smartshop_ml/` package
+- [ ] **Fix SentenceTransformer reload per UDF batch** — `spark/embedding_generation.py` reloads model inside every pandas UDF call
+  - Fix: use `mapPartitions` so model loads once per executor partition
+- [ ] **Fix N+1 Feast lookups in rec server** — `get_online_features()` called in a loop per candidate item
+  - Fix: one batched call `entity_rows=[{"item_id": id} for id in candidates]`
+- [ ] **Replace deprecated `@app.on_event("startup")` in all 3 servers** with FastAPI `lifespan` context manager
+  - Files: `serving/recommendation/server.py`, `serving/llm/server.py`, `serving/rag/server.py`
+- [ ] **Fix non-deterministic `review_id` in embeddings** — `monotonically_increasing_id()` changes on every Spark run, breaking Feast vector lookups
+  - Fix: `sha2(concat_ws("_", user_id, parent_asin, timestamp), 256)` as `review_id`
+
+### 🟡 Medium (infra / manifests)
+
+- [ ] **Narrow Spark SA RBAC** — `spark-rbac.yaml` binds ClusterRole `edit` to Spark SA (too broad)
+  - Fix: custom Role with only pods, configmaps, services in `smartshop` namespace
+- [ ] **Pin Feast git ref to `main`** — `feast-operator.yaml` has `ref: refine-cluster-infra-setup` (feature branch)
+  - Fix: update to `main` after merge, or pin to a tag/SHA
+- [ ] **Add missing `smartshop-models` PVC manifest** — `inferenceservices.yaml` mounts it but no manifest exists in repo
+  - Fix: add PVC manifest under `infrastructure/smartshop/` or switch InferenceServices to S3 `storageUri`
+- [ ] **Mark `ETCD_UNSAFE_NO_FSYNC=true` as demo-only** in `infrastructure/milvus/values.yaml` with prominent comment
+
+### 📄 Docs fixes
+
+- [ ] **Fix README `make spark-rapids`** — Makefile target is actually `spark-features-rapids`; add alias or fix README
+- [ ] **Update SETUP.md Section 9** — MLflow status callout still says "Broken"; update to "Fixed ✅"
+- [ ] **Update SETUP.md Pending table** — Gradio listed as "Not started" but `demo/app.py` exists
+- [ ] **Align README architecture diagram** — shows "1 node × 4 GPUs" for DDP; update after TrainJob topology fix
+
+---
+
 ## Dependency Order (Critical Path)
 
 ```
