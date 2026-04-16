@@ -1,6 +1,11 @@
-.PHONY: help data-sample data-full spark-run spark-features-rapids spark-local \
-       feast-apply feast-materialize \
-       train-rec train-llm serve serve-rec serve-llm serve-rag demo \
+.PHONY: help install \
+       data-sample data-full \
+       spark-local spark-features-local spark-text-local spark-embeddings-local \
+       spark-run spark-features-rapids spark-rapids \
+       feast-apply feast-materialize feast-test \
+       train-rec train-rec-k8s train-llm train-llm-slurm \
+       serve serve-rec serve-llm serve-rag serve-k8s \
+       demo \
        setup-builds build-images build-spark build-rec build-llm build-serving \
        build-spark-rapids build-status push-images \
        setup-secrets deploy clean
@@ -71,10 +76,12 @@ spark-embeddings-local: ## Run embedding generation locally
 # ============================================================================
 
 spark-run: ## Submit all Spark jobs to OpenShift
-	envsubst < infrastructure/openshift/spark-application.yaml | $(KUBECTL) apply -f - -n $(NAMESPACE)
+	envsubst < infrastructure/openshift/spark-application.yaml | $(KUBECTL) apply -f -
 
-spark-features-rapids: ## Submit RAPIDS GPU-accelerated feature engineering job
-	envsubst < infrastructure/openshift/spark-application-rapids.yaml | $(KUBECTL) apply -f - -n $(NAMESPACE)
+spark-features-rapids: ## Submit RAPIDS GPU-accelerated Spark jobs (optional, needs GPU executor nodes)
+	envsubst < infrastructure/openshift/spark-application-rapids.yaml | $(KUBECTL) apply -f -
+
+spark-rapids: spark-features-rapids ## Alias for spark-features-rapids
 
 # ============================================================================
 # Feast Feature Store

@@ -16,16 +16,26 @@ Canonical S3 bucket layout:
   smartshop-models/recommendation/- trained Two-Tower checkpoint
   smartshop-models/llm-adapter/   - QLoRA LoRA adapter weights
 
+Images resolve from ImageStream short names inside the smartshop namespace
+(lookupPolicy.local: true). Override via env vars SPARK_JOBS_IMAGE,
+REC_TRAINER_IMAGE, LLM_TRAINER_IMAGE if using quay.io images.
+
 Usage:
     python pipelines/e2e_pipeline.py  # Compile to YAML
     # Then upload to Kubeflow Pipelines UI or submit via SDK
 """
 
+import os
+
 from kfp import dsl
+
+_SPARK_IMAGE = os.environ.get("SPARK_JOBS_IMAGE", "spark-jobs:latest")
+_REC_TRAINER_IMAGE = os.environ.get("REC_TRAINER_IMAGE", "rec-trainer:latest")
+_LLM_TRAINER_IMAGE = os.environ.get("LLM_TRAINER_IMAGE", "llm-trainer:latest")
 
 
 @dsl.component(
-    base_image="quay.io/smartshop/spark-jobs:latest",
+    base_image=_SPARK_IMAGE,
     packages_to_install=["kfp"],
 )
 def spark_feature_engineering(
@@ -50,7 +60,7 @@ def spark_feature_engineering(
 
 
 @dsl.component(
-    base_image="quay.io/smartshop/spark-jobs:latest",
+    base_image=_SPARK_IMAGE,
     packages_to_install=["kfp"],
 )
 def spark_text_preprocessing(
@@ -73,7 +83,7 @@ def spark_text_preprocessing(
 
 
 @dsl.component(
-    base_image="quay.io/smartshop/spark-jobs:latest",
+    base_image=_SPARK_IMAGE,
     packages_to_install=["kfp"],
 )
 def spark_embedding_generation(
@@ -116,7 +126,7 @@ def feast_materialize(feast_repo_path: str) -> str:
 
 
 @dsl.component(
-    base_image="quay.io/smartshop/rec-trainer:latest",
+    base_image=_REC_TRAINER_IMAGE,
     packages_to_install=["kfp"],
 )
 def train_recommendation_model(
@@ -143,7 +153,7 @@ def train_recommendation_model(
 
 
 @dsl.component(
-    base_image="quay.io/smartshop/llm-trainer:latest",
+    base_image=_LLM_TRAINER_IMAGE,
     packages_to_install=["kfp"],
 )
 def finetune_llm(

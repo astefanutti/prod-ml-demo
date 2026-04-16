@@ -143,89 +143,124 @@ GPU nodes are expensive. Slurm worker pods (`NodeSet`) are scaled to 0 when not 
 ## Quick Start (Local / Sample Data)
 
 ```bash
-# 1. Install dependencies
-pip install -r requirements.txt
+# 1. Install all dev dependencies
+make install          # pip install -r build/requirements/dev.txt
 
-# 2. Download sample dataset (~1M reviews, ~500MB)
+# 2. Copy env template and fill in MinIO/Redis/HF credentials
+cp .env.example .env  # edit .env before continuing
+
+# 3. Download sample dataset (~1M reviews, ~500MB)
 make data-sample
 
-# 3. Run Spark preprocessing locally
+# 4. Run Spark preprocessing locally
 make spark-local
 
-# 4. Set up Feast feature store
+# 5. Set up Feast feature store
 make feast-apply
 
-# 5. Train recommendation model
+# 6. Train recommendation model
 make train-rec
 
-# 6. (Optional) Fine-tune LLM on sample data
+# 7. (Optional) Fine-tune LLM on sample data
 make train-llm
 
-# 7. Start serving endpoints (MLflow tracking available at localhost:5000)
+# 8. Start serving endpoints
 make serve
 
-# 8. Launch demo UI
+# 9. Launch demo UI
 make demo
 ```
 
 ## Full-Scale Run (OpenShift AI)
 
 ```bash
-# 1. Deploy infrastructure (MinIO, Redis, operators)
+# 0. Prerequisites: oc login, .env filled in
+cp .env.example .env   # set cluster domain, credentials, HF_TOKEN, etc.
+make setup-secrets     # creates all Kubernetes secrets from .env
+
+# 1. Deploy core namespace resources (storage, RBAC)
 make deploy
 
-# 2. Build and push container images
-make build-images push-images
+# 2. Build container images on-cluster via BuildConfig + ImageStream
+make setup-builds      # create ImageStreams + BuildConfigs (once per cluster)
+make build-images      # trigger oc start-build for all 4 images
 
-# 3. Download full dataset (~49GB)
+# 3. Download full dataset (~49GB) and upload to MinIO smartshop-raw/
 make data-full
 
-# 4. Submit Spark jobs to cluster
-make spark-run         # CPU (default)
-make spark-rapids      # GPU-accelerated via RAPIDS (optional, requires GPU executor nodes)
+# 4. Submit Spark ETL jobs to cluster
+make spark-run              # CPU path: feature_engineering + text_preprocessing + embedding_generation
+make spark-features-rapids  # GPU path via RAPIDS (optional, requires GPU executor nodes)
 
-# 5. Materialize Feast features
+# 5. Register Feast feature views and materialize to online store
+make feast-apply
 make feast-materialize
 
-# 6. Submit training jobs (MLflow_TRACKING_URI set in TrainJob env)
-make train-rec-k8s    # DDP on K8s
-make train-llm-slurm  # FSDP on Slurm
+# 6. Submit distributed training jobs
+make train-rec-k8s     # Two-Tower rec model — DDP on K8s (Kubeflow TrainJob)
+make train-llm-slurm   # Mistral-7B QLoRA — FSDP on Slurm
 
-# 7. Deploy serving endpoints
+# 7. Deploy all 3 KServe InferenceServices
 make serve-k8s
+
+# 8. Launch demo UI
+make demo
 ```
 
 ## Project Structure
 
 ```
 prod-ml-demo/
+├── build/
+│   ├── Containerfile.spark          # spark-jobs image (PySpark + Feast + sentence-transformers)
+│   ├── Containerfile.rec-trainer    # rec-trainer image (PyTorch DDP)
+│   ├── Containerfile.llm-trainer    # llm-trainer image (QLoRA fine-tuning)
+│   ├── Containerfile.serving        # rec-server image (FastAPI: rec + llm + rag)
+│   ├── Containerfile.spark-rapids   # spark-jobs-rapids image (NVIDIA RAPIDS, optional)
+│   └── requirements/
+│       ├── training.txt             # deps for rec-trainer + llm-trainer
+│       ├── serving.txt              # deps for rec-server
+│       ├── spark.txt                # deps for spark-jobs
+│       └── dev.txt                  # local dev superset (+ gradio + jupyter)
+├── data/                            # Download scripts + sample data (gitignored)
+├── demo/                            # Gradio demo UI (3 tabs: rec · summarize · Q&A)
 ├── docs/
-│   ├── SETUP.md             # Full setup guide (start here)
-│   ├── demo-setup-todo.md   # Phase-by-phase task tracker
-│   └── assets/              # Screenshots referenced in SETUP.md
-├── data/                    # Download scripts, sample data
-├── spark/                   # Spark jobs (feature eng, text preprocessing, embeddings)
-├── feast/feature_repo/      # Feast feature view definitions + local feature_store.yaml
-├── training/
-│   ├── recommendation/      # Two-Tower model + DDP training script
-│   └── llm/                 # QLoRA fine-tuning + FSDP config
-├── serving/
-│   ├── recommendation/      # KServe recommendation server
-│   ├── llm/                 # vLLM-based summarization server
-│   └── rag/                 # RAG Q&A pipeline (Feast vector search + LLM)
-├── pipelines/               # Kubeflow Pipeline (e2e orchestration)
-├── demo/                    # Gradio demo UI
+│   ├── SETUP.md                     # Full setup guide (start here)
+│   ├── demo-setup-todo.md           # Phase-by-phase task tracker
+│   └── assets/                      # Screenshots referenced in SETUP.md
+├── feast/
+│   └── feature_repo/                # Feast feature views, entities, feature_store.yaml
 ├── infrastructure/
-│   ├── smartshop/           # Namespace, shared NFS PVC, credentials, Spark RBAC
-│   ├── redis/               # Redis deployment + RedisInsight UI
-│   ├── milvus/              # Milvus Helm values, deploy script, Attu UI
-│   ├── feast/               # Feast FeatureStore CR + secrets
-│   ├── mlflow/              # PostgreSQL backend for MLflow
-│   ├── openshift/           # SparkApplication, TrainJob, InferenceService manifests
-│   └── slurm/               # Slurm Helm values, NFS PVC, sbatch scripts
-├── Containerfile.*          # Container images for each component
-├── Makefile                 # All build/run/deploy targets
-└── requirements*.txt        # Python dependencies
+│   ├── smartshop/                   # Namespace, shared NFS PVC, credentials Secret, Spark RBAC
+│   ├── redis/                       # Redis deployment
+│   ├── milvus/                      # Milvus Helm values + Attu UI
+│   ├── feast/                       # Feast FeatureStore CR
+│   ├── mlflow/                      # MLflow CR + PostgreSQL backend
+│   ├── slurm/                       # Slurm Helm values, NFS PVC, sbatch script
+│   └── openshift/
+│       ├── imagestreams.yaml        # ImageStream CRs (in-cluster image registry)
+│       ├── buildconfigs.yaml        # BuildConfig CRs (on-cluster image builds)
+│       ├── spark-application.yaml   # SparkApplication: feature eng + text + embeddings
+│       ├── spark-application-rapids.yaml  # RAPIDS GPU variant (optional)
+│       ├── trainjobs.yaml           # TrainJob: DDP rec model + FSDP LLM
+│       └── inferenceservices.yaml   # KServe InferenceService: rec + llm + rag
+├── notebooks/                       # Jupyter notebooks for exploration
+├── pipelines/
+│   └── e2e_pipeline.py              # Kubeflow Pipeline (full end-to-end DAG)
+├── serving/
+│   ├── recommendation/              # Two-Tower inference + Feast online lookup
+│   ├── llm/                         # LoRA adapter inference + /v1/completions endpoint
+│   └── rag/                         # Feast vector search + LLM Q&A
+├── spark/
+│   ├── feature_engineering.py       # User/item feature computation → smartshop-features/
+│   ├── text_preprocessing.py        # Review JSONL for LLM fine-tuning → smartshop-features/llm_data/
+│   └── embedding_generation.py      # Sentence embeddings → smartshop-embeddings/
+├── training/
+│   ├── recommendation/              # Two-Tower model definition + DDP train script
+│   └── llm/                         # QLoRA fine-tune script (FSDP-ready via torchrun)
+├── .env.example                     # Env var template — copy to .env and fill in
+├── Makefile                         # All build/run/deploy targets (run `make help`)
+└── .gitignore
 ```
 
 ## Key Components
