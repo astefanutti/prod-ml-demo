@@ -96,8 +96,8 @@ item_features_view = FeatureView(
         Field(name="item_total_helpful_votes", dtype=Int64),
         Field(name="item_avg_review_length", dtype=Float64),
         Field(name="item_price", dtype=Float32),
-        Field(name="item_price_bucket", dtype=String),
-        Field(name="category", dtype=String),
+        # item_price_bucket and category excluded — string fields, not usable
+        # as float32 tensor inputs in TwoTowerModel (item_feat_dim=6 numeric only)
     ],
     source=item_features_source,
     online=True,
