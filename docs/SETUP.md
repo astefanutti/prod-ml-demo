@@ -555,6 +555,165 @@ oc get featurestore smartshop-feast -n smartshop \
 
 After the dashboard restarts, the **Feature Store** section appears in the RHOAI sidebar under the `smartshop` project.
 
+### 8c — Run `feast apply` (register schema)
+
+`feast apply` registers the feature schema and metadata into the Feast registry. It does **not** move any data — it only tells Feast what features exist, where they live, and which entities own them.
+
+```bash
+# Run inside the Feast offline container
+FEAST_POD=$(oc get pod -n smartshop -l app=feast-smartshop-feast \
+  -o jsonpath='{.items[0].metadata.name}')
+
+oc exec -n smartshop $FEAST_POD -c offline -- \
+  bash -c "cd /feast-data/smartshop/feast/feature_repo && feast apply"
+
+# Expected output:
+# Applying changes for project smartshop
+# Deploying infrastructure for user_features
+# Deploying infrastructure for item_features
+# Deploying infrastructure for review_embeddings
+```
+
+> **Prerequisite — placeholder Parquet files:** `feast apply` reads the schema
+> from the S3 data sources even when `schema=` is explicitly declared (Feast 0.60
+> always calls `get_table_column_names_and_types_from_data_source` to populate
+> entity columns). Before the Spark ETL has run, the buckets are empty and PyArrow
+> returns `ACCESS_DENIED` (MinIO returns HTTP 403 for `HeadObject` on missing keys,
+> not 404). Run this once to write empty schema-carrying Parquet files:
+>
+> ```bash
+> oc exec -n smartshop $FEAST_POD -c offline -- python3 << 'EOF'
+> import os, pyarrow as pa, pyarrow.parquet as pq, pyarrow.fs as pafs
+> from datetime import datetime, timezone
+>
+> endpoint = os.environ["AWS_ENDPOINT_URL_S3"].replace("http://", "")
+> s3 = pafs.S3FileSystem(
+>     access_key=os.environ["AWS_ACCESS_KEY_ID"],
+>     secret_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+>     endpoint_override=endpoint, scheme="http", force_virtual_addressing=False,
+> )
+> ts = pa.timestamp("us", tz="UTC")
+> placeholders = {
+>     "smartshop-features/user_features/_placeholder.parquet": pa.schema([
+>         pa.field("user_id", pa.string()), pa.field("event_timestamp", ts),
+>         pa.field("user_avg_rating", pa.float64()), pa.field("user_review_count", pa.int64()),
+>         pa.field("user_unique_items", pa.int64()), pa.field("user_avg_review_length", pa.float64()),
+>         pa.field("user_category_count", pa.int64()), pa.field("user_tenure_days", pa.int64()),
+>     ]),
+>     "smartshop-features/item_features/_placeholder.parquet": pa.schema([
+>         pa.field("item_id", pa.string()), pa.field("event_timestamp", ts),
+>         pa.field("item_avg_rating", pa.float64()), pa.field("item_rating_stddev", pa.float64()),
+>         pa.field("item_review_count", pa.int64()), pa.field("item_total_helpful_votes", pa.int64()),
+>         pa.field("item_avg_review_length", pa.float64()), pa.field("item_price", pa.float32()),
+>     ]),
+>     "smartshop-embeddings/review_embeddings/_placeholder.parquet": pa.schema([
+>         pa.field("review_id", pa.string()), pa.field("event_timestamp", ts),
+>         pa.field("item_id", pa.string()), pa.field("user_id", pa.string()),
+>         pa.field("rating", pa.float64()), pa.field("review_title", pa.string()),
+>         pa.field("embed_text", pa.string()), pa.field("embedding", pa.list_(pa.float32())),
+>     ]),
+> }
+> for path, schema in placeholders.items():
+>     with s3.open_output_stream(path) as f:
+>         pq.write_table(schema.empty_table(), f)
+>     print("OK", path)
+> EOF
+> ```
+
+---
+
+### 8d — Feast Hierarchy and Data Flow
+
+Understanding what `feast apply` sets up vs what requires real data:
+
+```
+Project: smartshop
+│
+├── Entities (join keys — WHO features describe)
+│   ├── user_id   STRING  → joins user_features rows to a user
+│   ├── item_id   STRING  → joins item_features rows to a product
+│   └── review_id STRING  → joins review_embeddings rows to a review
+│
+├── Data Sources (WHERE offline data lives — MinIO S3 Parquet)
+│   ├── s3://smartshop-features/user_features/          ← written by Spark job A
+│   ├── s3://smartshop-features/item_features/          ← written by Spark job A
+│   └── s3://smartshop-embeddings/review_embeddings/    ← written by Spark job C
+│
+├── Feature Views (WHAT features + TTL + online flag)
+│   ├── user_features      6 numeric cols  TTL=30d  online=True  entity=user_id
+│   ├── item_features      6 numeric cols  TTL=30d  online=True  entity=item_id
+│   └── review_embeddings  embedding vector + 5 meta  TTL=90d  online=True  entity=review_id
+│
+└── Stores
+    ├── Offline  → MinIO S3 Parquet  (historical retrieval for training)
+    ├── Online   → Redis             (sub-ms lookups at serving time)
+    └── Vector   → Milvus            (ANN similarity search for RAG)
+```
+
+**Feature counts are intentionally constrained:**
+- `user_features`: 6 numeric columns exactly matching `training/recommendation/train.py` `user_feat_cols`
+- `item_features`: 6 numeric columns exactly matching `item_feat_cols` — string fields (`item_price_bucket`, `category`) are excluded because they cannot be cast to `torch.float32` tensors
+- `review_embeddings`: 384-dim `all-MiniLM-L6-v2` embedding + metadata fields for RAG context
+
+### 8e — Full Data Pipeline (what still needs to run)
+
+`feast apply` ✅ only registers schema. Real data flows through these stages:
+
+```
+[❌ Step 1]  Download Amazon Reviews 2023 (~49GB)
+             make data-full   (or data-sample for 5% subset)
+             Upload to s3://smartshop-raw/raw/
+
+[❌ Step 2]  Spark feature engineering  (make spark-run)
+             Reads  → smartshop-raw/raw/
+             Writes → smartshop-features/user_features/    (user aggregates)
+                    → smartshop-features/item_features/    (item aggregates)
+                    → smartshop-features/llm_data/         (instruction-tuning JSONL)
+
+[❌ Step 3]  Spark embedding generation  (make spark-embeddings)
+             Reads  → smartshop-raw/raw/
+             Writes → smartshop-embeddings/review_embeddings/  (384-dim vectors)
+
+[❌ Step 4]  feast materialize  (make feast-materialize)
+             Reads Parquet from S3 (offline store)
+             Pushes user/item features → Redis  (online store)
+             Pushes embeddings         → Milvus (vector store)
+
+[❌ Step 5]  Training reads from S3/Redis → trains model → saves to smartshop-models/
+
+[❌ Step 6]  KServe serving calls Redis + Milvus at inference time
+```
+
+**Current MinIO state** (as of `feast apply`):
+
+```
+smartshop-raw/                      EMPTY   ← dataset not downloaded yet
+smartshop-features/
+  user_features/_placeholder.parquet  ← schema carrier only, 0 rows
+  item_features/_placeholder.parquet  ← schema carrier only, 0 rows
+  llm_data/                           EMPTY
+smartshop-embeddings/
+  review_embeddings/_placeholder.parquet  ← schema carrier only, 0 rows
+smartshop-models/                   EMPTY
+```
+
+### 8f — Verify Feature Store in RHOAI Dashboard
+
+The RHOAI Dashboard shows the registered feature views, entities, and lineage graph:
+
+**Feature views list** — 3 views registered, all Online-enabled:
+
+![Feast feature views list in RHOAI dashboard](./assets/feast-feature-views-list.png)
+
+**Lineage graph** — data sources → entities → feature views:
+
+![Feast lineage graph showing data source to feature view relationships](./assets/feast-lineage-post-apply.png)
+
+> **Note on `__dummy` entity in lineage:** The lineage graph shows an internal
+> Feast `__no_join_key` placeholder rendered as `Entity: __dummy`. This is a
+> RHOAI Dashboard UI rendering artifact — `feast entities list` returns only
+> the 3 correct entities. No functional impact.
+
 ---
 
 ## 9. Deploy MLflow (PostgreSQL backend)
