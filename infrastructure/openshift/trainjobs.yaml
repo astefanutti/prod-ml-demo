@@ -54,6 +54,20 @@ spec:
                           value: "feast/feature_repo"
                         - name: S3_ENDPOINT
                           value: "http://minio.smartshop.svc.cluster.local:9000"
+                        - name: AWS_ENDPOINT_URL_S3
+                          value: "http://minio.smartshop.svc.cluster.local:9000"
+                        - name: AWS_DEFAULT_REGION
+                          value: "us-east-1"
+                        - name: AWS_ACCESS_KEY_ID
+                          valueFrom:
+                            secretKeyRef:
+                              name: smartshop-credentials
+                              key: AWS_ACCESS_KEY_ID
+                        - name: AWS_SECRET_ACCESS_KEY
+                          valueFrom:
+                            secretKeyRef:
+                              name: smartshop-credentials
+                              key: AWS_SECRET_ACCESS_KEY
                       volumeMounts:
                         - name: shm
                           mountPath: /dev/shm

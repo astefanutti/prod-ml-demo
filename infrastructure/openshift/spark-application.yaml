@@ -1,7 +1,8 @@
 ---
 # Kubeflow Spark Operator - Feature Engineering Job
 # S3 credentials are injected from the smartshop-credentials Secret via envFrom.
-# Update infrastructure/smartshop/credentials.yaml with your MinIO credentials before applying.
+# hadoopConf reads credentials from AWS_* env vars provided by that secret.
+# Apply with: envsubst < infrastructure/openshift/spark-application.yaml | oc apply -f -
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
@@ -28,11 +29,11 @@ spec:
     onFailureRetryInterval: 30
   hadoopConf:
     fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
-    fs.s3a.access.key: "${MINIO_ACCESS_KEY}"
-    fs.s3a.secret.key: "${MINIO_SECRET_KEY}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    # EnvironmentVariableCredentialsProvider reads AWS_ACCESS_KEY_ID and
+    # AWS_SECRET_ACCESS_KEY from pod env, which are injected via envFrom below.
+    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
     memory: "4g"
@@ -73,11 +74,9 @@ spec:
     onFailureRetries: 2
   hadoopConf:
     fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
-    fs.s3a.access.key: "${MINIO_ACCESS_KEY}"
-    fs.s3a.secret.key: "${MINIO_SECRET_KEY}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
     memory: "4g"
@@ -118,11 +117,9 @@ spec:
     onFailureRetries: 2
   hadoopConf:
     fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
-    fs.s3a.access.key: "${MINIO_ACCESS_KEY}"
-    fs.s3a.secret.key: "${MINIO_SECRET_KEY}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
     memory: "8g"

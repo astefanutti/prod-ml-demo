@@ -9,4 +9,7 @@ COPY training/llm/ training/llm/
 
 USER 1001
 
-CMD ["torchrun", "--nproc_per_node=1", "training/llm/finetune.py"]
+# --data-dir is required; the TrainJob spec always overrides this CMD.
+# For standalone testing: docker run ... --data-dir /local/llm_data --sample
+CMD ["torchrun", "--nproc_per_node=1", "training/llm/finetune.py", \
+     "--data-dir", "data/llm_data", "--sample"]

@@ -79,14 +79,14 @@ def compute_item_features(reviews_df, metadata_df):
         item_features = review_aggs.withColumn("item_price", F.lit(None).cast("float"))
 
     # Price bucketing
-    item_features = item_features.withColumn(
-        "item_price_bucket",
-        F.when(F.col("item_price") < 10, "budget")
-        .when(F.col("item_price") < 50, "mid")
-        .when(F.col("item_price") < 200, "premium")
-        .when(F.col("item_price").isNotNull(), "luxury")
-        .otherwise("unknown"),
-    ).withColumn("event_timestamp", F.current_timestamp())
+    item_features = (
+        item_features
+        .withColumn("event_timestamp", F.current_timestamp())
+        # Rename to match Feast entity key — Feast entity is `item_id`, not `parent_asin`
+        .withColumnRenamed("parent_asin", "item_id")
+        # Drop string columns not consumed by the TwoTower model
+        .drop("item_price_bucket", "category", "item_meta_rating", "item_meta_rating_count")
+    )
 
     return item_features
 

@@ -262,6 +262,8 @@ def main():
                         "num_items": dataset.num_items,
                         "user_to_idx": dataset.user_to_idx,
                         "item_to_idx": dataset.item_to_idx,
+                        "user_feat_dim": len(dataset.user_feat_cols),
+                        "item_feat_dim": len(dataset.item_feat_cols),
                         "embed_dim": args.embed_dim,
                         "hidden_dim": args.hidden_dim,
                         "val_loss": val_loss,
