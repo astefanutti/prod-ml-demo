@@ -8,8 +8,8 @@ ENV UV_CACHE_DIR=/tmp/uv-cache
 
 WORKDIR /app
 
-COPY requirements-training.txt .
-RUN uv pip install --python python3.12 --no-cache -r requirements-training.txt
+COPY build/requirements/training.txt requirements.txt
+RUN uv pip install --python python3.12 --no-cache -r requirements.txt
 
 COPY training/llm/ training/llm/
 

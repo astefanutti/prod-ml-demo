@@ -9,15 +9,11 @@ ENV UV_CACHE_DIR=/tmp/uv-cache
 
 WORKDIR /opt/spark/work-dir
 
+COPY build/requirements/spark.txt requirements.txt
 COPY spark/ .
 
 # Pin uv to python3.12 explicitly — ubi9 system default is 3.9
-RUN uv pip install --python python3.12 --no-cache \
-    "pyspark==3.5.3" \
-    "feast>=0.60.0" \
-    "pandas>=2.0.0" \
-    "pyarrow>=14.0.0" \
-    "sentence-transformers==3.3.1"
+RUN uv pip install --python python3.12 --no-cache -r requirements.txt
 
 # Resolve SPARK_HOME from pyspark install location under python3.12
 RUN python3.12 -c \

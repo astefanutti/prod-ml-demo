@@ -1,0 +1,10 @@
+# Spark jobs image — feature engineering, text preprocessing, embedding generation
+# Installed with: uv pip install --python python3.12 --no-cache -r spark.txt
+# Note: pyspark pinned to match sparkVersion in spark-application.yaml
+pyspark==3.5.3
+feast>=0.60.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+sentence-transformers==3.3.1
+fsspec>=2024.2.0
+s3fs>=2024.2.0

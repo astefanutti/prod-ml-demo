@@ -1,4 +1,5 @@
-# Training dependencies
+# Training image — rec-trainer + llm-trainer
+# Installed with: uv pip install --python python3.12 --no-cache -r training.txt
 torch>=2.5.0
 datasets>=3.0.0
 pandas>=2.0.0
