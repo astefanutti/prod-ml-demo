@@ -16,7 +16,7 @@ spec:
   strategy:
     type: Docker
     dockerStrategy:
-      dockerfilePath: Containerfile.spark
+      dockerfilePath: build/Containerfile.spark
       noCache: false
       env:
         - name: UV_CACHE_DIR
@@ -48,7 +48,7 @@ spec:
   strategy:
     type: Docker
     dockerStrategy:
-      dockerfilePath: Containerfile.rec-trainer
+      dockerfilePath: build/Containerfile.rec-trainer
       noCache: false
   output:
     to:
@@ -77,7 +77,7 @@ spec:
   strategy:
     type: Docker
     dockerStrategy:
-      dockerfilePath: Containerfile.llm-trainer
+      dockerfilePath: build/Containerfile.llm-trainer
       noCache: false
   output:
     to:
@@ -106,7 +106,7 @@ spec:
   strategy:
     type: Docker
     dockerStrategy:
-      dockerfilePath: Containerfile.serving
+      dockerfilePath: build/Containerfile.serving
       noCache: false
   output:
     to:

@@ -1,7 +1,8 @@
 .PHONY: help data-sample data-full spark-run spark-features-rapids spark-local \
        feast-apply feast-materialize \
        train-rec train-llm serve serve-rec serve-llm serve-rag demo \
-       build-images build-image-spark-rapids push-images \
+       setup-builds build-images build-spark build-rec build-llm build-serving \
+       build-spark-rapids build-status push-images \
        setup-secrets deploy clean
 
 # Load .env if present — exports all vars so envsubst and shell commands pick them up.
@@ -13,7 +14,8 @@ PYTHON ?= python
 SPARK_SUBMIT ?= spark-submit
 KUBECTL ?= kubectl
 NAMESPACE ?= smartshop
-REGISTRY ?= quay.io/smartshop
+REGISTRY ?= quay.io/abdhumal
+INTERNAL_REGISTRY ?= default-route-openshift-image-registry.apps.oai-kft-ibm.ibm.rh-ods.com
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -161,19 +163,13 @@ build-serving:   ## Build only rec-server (serving) image
 build-status:    ## Show status of all builds
 	$(KUBECTL) get builds -n $(NAMESPACE)
 
-push-images: ## Mirror images from internal registry to quay.io (optional)
+push-images: ## Mirror all images from internal registry → quay.io/abdhumal
 	$(KUBECTL) image mirror \
-	  image-registry.openshift-image-registry.svc:5000/$(NAMESPACE)/spark-jobs:latest \
-	  $(REGISTRY)/spark-jobs:latest
-	$(KUBECTL) image mirror \
-	  image-registry.openshift-image-registry.svc:5000/$(NAMESPACE)/rec-trainer:latest \
-	  $(REGISTRY)/rec-trainer:latest
-	$(KUBECTL) image mirror \
-	  image-registry.openshift-image-registry.svc:5000/$(NAMESPACE)/llm-trainer:latest \
-	  $(REGISTRY)/llm-trainer:latest
-	$(KUBECTL) image mirror \
-	  image-registry.openshift-image-registry.svc:5000/$(NAMESPACE)/rec-server:latest \
-	  $(REGISTRY)/rec-server:latest
+	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/spark-jobs:latest=$(REGISTRY)/smartshop-spark-jobs:latest" \
+	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/rec-trainer:latest=$(REGISTRY)/smartshop-rec-trainer:latest" \
+	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/llm-trainer:latest=$(REGISTRY)/smartshop-llm-trainer:latest" \
+	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/rec-server:latest=$(REGISTRY)/smartshop-rec-server:latest" \
+	  --insecure=true -a ~/.config/containers/auth.json
 
 # ============================================================================
 # Infrastructure
