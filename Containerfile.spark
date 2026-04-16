@@ -14,7 +14,7 @@ COPY spark/ .
 # Pin uv to python3.12 explicitly — ubi9 system default is 3.9
 RUN uv pip install --python python3.12 --no-cache \
     "pyspark==3.5.3" \
-    "feast[spark]>=0.60.0" \
+    "feast>=0.60.0" \
     "pandas>=2.0.0" \
     "pyarrow>=14.0.0" \
     "sentence-transformers==3.3.1"
