@@ -12,7 +12,7 @@ spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/smartshop/spark-jobs:latest"
+  image: "spark-jobs:latest"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/feature_engineering.py"
   arguments:
@@ -22,7 +22,7 @@ spec:
     - "s3a://smartshop-features/"
     - "--metadata-input"
     - "s3a://smartshop-raw/raw/metadata/"
-  sparkVersion: "3.5.0"
+  sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
@@ -60,7 +60,7 @@ spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/smartshop/spark-jobs:latest"
+  image: "spark-jobs:latest"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/text_preprocessing.py"
   arguments:
@@ -68,7 +68,7 @@ spec:
     - "s3a://smartshop-raw/raw/"
     - "--output"
     - "s3a://smartshop-features/llm_data/"
-  sparkVersion: "3.5.0"
+  sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
@@ -103,7 +103,7 @@ spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/smartshop/spark-jobs:latest"
+  image: "spark-jobs:latest"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/embedding_generation.py"
   arguments:
@@ -111,7 +111,7 @@ spec:
     - "s3a://smartshop-raw/raw/"
     - "--output"
     - "s3a://smartshop-embeddings/review_embeddings/"
-  sparkVersion: "3.5.0"
+  sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2

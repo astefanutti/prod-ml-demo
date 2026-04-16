@@ -1,0 +1,36 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: spark-jobs
+  namespace: smartshop
+spec:
+  lookupPolicy:
+    local: true   # pods in this namespace can reference 'spark-jobs:latest' directly
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: rec-trainer
+  namespace: smartshop
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: llm-trainer
+  namespace: smartshop
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: rec-server
+  namespace: smartshop
+spec:
+  lookupPolicy:
+    local: true

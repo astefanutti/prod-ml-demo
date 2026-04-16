@@ -1,0 +1,120 @@
+---
+# BuildConfig — spark-jobs
+# Builds Containerfile.spark from the git repo and pushes to the internal ImageStream.
+# Trigger: oc start-build spark-jobs -n smartshop
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: spark-jobs
+  namespace: smartshop
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/abhijeet-dhumal/prod-ml-demo.git
+      ref: refine-cluster-infra-setup
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Containerfile.spark
+      noCache: false
+      env:
+        - name: UV_CACHE_DIR
+          value: /tmp/uv-cache
+  output:
+    to:
+      kind: ImageStreamTag
+      name: spark-jobs:latest
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — rec-trainer
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: rec-trainer
+  namespace: smartshop
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/abhijeet-dhumal/prod-ml-demo.git
+      ref: refine-cluster-infra-setup
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Containerfile.rec-trainer
+      noCache: false
+  output:
+    to:
+      kind: ImageStreamTag
+      name: rec-trainer:latest
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — llm-trainer
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: llm-trainer
+  namespace: smartshop
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/abhijeet-dhumal/prod-ml-demo.git
+      ref: refine-cluster-infra-setup
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Containerfile.llm-trainer
+      noCache: false
+  output:
+    to:
+      kind: ImageStreamTag
+      name: llm-trainer:latest
+  resources:
+    limits:
+      cpu: "4"
+      memory: "12Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — rec-server (serving image)
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: rec-server
+  namespace: smartshop
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/abhijeet-dhumal/prod-ml-demo.git
+      ref: refine-cluster-infra-setup
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Containerfile.serving
+      noCache: false
+  output:
+    to:
+      kind: ImageStreamTag
+      name: rec-server:latest
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2

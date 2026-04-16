@@ -9,7 +9,7 @@ spec:
   runtimeRef:
     name: smartshop-rec-ddp
   trainer:
-    image: quay.io/smartshop/rec-trainer:latest
+    image: rec-trainer:latest
     command:
       - torchrun
     args:
@@ -89,7 +89,7 @@ spec:
     name: smartshop-llm-fsdp-slurm
     kind: ClusterTrainingRuntime
   trainer:
-    image: quay.io/smartshop/llm-trainer:latest
+    image: llm-trainer:latest
     command:
       - torchrun
     args:

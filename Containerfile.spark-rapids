@@ -1,5 +1,6 @@
-# NVIDIA RAPIDS+Spark — no quay equivalent exists for this combination.
-# Requires: docker login nvcr.io (free NGC account)
+# RAPIDS+Spark: no Red Hat registry equivalent exists for this GPU-accelerated combination.
+# Requires: podman login nvcr.io (free NGC account at https://ngc.nvidia.com)
+# Only needed for the optional RAPIDS GPU variant — CPU path uses Containerfile.spark.
 FROM nvcr.io/nvidia/spark:3.5.0-rapids24.10
 
 USER 0
@@ -12,8 +13,9 @@ WORKDIR /opt/spark/work-dir
 COPY spark/ .
 
 RUN uv pip install --system --no-cache \
-    sentence-transformers==3.3.1 \
-    pandas>=2.0.0 \
-    pyarrow>=14.0.0
+    "feast[spark]>=0.60.0" \
+    "pandas>=2.0.0" \
+    "pyarrow>=14.0.0" \
+    "sentence-transformers==3.3.1"
 
 USER 1001

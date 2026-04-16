@@ -64,10 +64,10 @@ spark-embeddings-local: ## Run embedding generation locally
 # ============================================================================
 
 spark-run: ## Submit all Spark jobs to OpenShift
-	$(KUBECTL) apply -f infrastructure/openshift/spark-application.yaml -n $(NAMESPACE)
+	envsubst < infrastructure/openshift/spark-application.yaml | $(KUBECTL) apply -f - -n $(NAMESPACE)
 
 spark-features-rapids: ## Submit RAPIDS GPU-accelerated feature engineering job
-	$(KUBECTL) apply -f infrastructure/openshift/spark-application-rapids.yaml -n $(NAMESPACE)
+	envsubst < infrastructure/openshift/spark-application-rapids.yaml | $(KUBECTL) apply -f - -n $(NAMESPACE)
 
 # ============================================================================
 # Feast Feature Store
@@ -95,7 +95,7 @@ train-rec: ## Train recommendation model (DDP)
 		--batch-size 1024
 
 train-rec-k8s: ## Submit rec model TrainJob to K8s
-	$(KUBECTL) apply -f infrastructure/openshift/trainjobs.yaml -n $(NAMESPACE)
+	envsubst < infrastructure/openshift/trainjobs.yaml | $(KUBECTL) apply -f - -n $(NAMESPACE)
 
 train-llm: ## Fine-tune Mistral-7B with QLoRA (local, sample)
 	$(PYTHON) training/llm/finetune.py \
@@ -133,23 +133,47 @@ demo: ## Launch Gradio demo UI
 	$(PYTHON) demo/app.py
 
 # ============================================================================
-# Container Images
+# Container Images — built on-cluster via OpenShift BuildConfig + ImageStream
 # ============================================================================
 
-build-images: ## Build all container images
-	podman build -f Containerfile.spark -t $(REGISTRY)/spark-jobs:latest .
-	podman build -f Containerfile.rec-trainer -t $(REGISTRY)/rec-trainer:latest .
-	podman build -f Containerfile.llm-trainer -t $(REGISTRY)/llm-trainer:latest .
-	podman build -f Containerfile.serving -t $(REGISTRY)/rec-server:latest .
+setup-builds: ## Create ImageStreams and BuildConfigs on the cluster
+	$(KUBECTL) apply -f infrastructure/openshift/imagestreams.yaml
+	$(KUBECTL) apply -f infrastructure/openshift/buildconfigs.yaml
 
-build-image-spark-rapids: ## Build RAPIDS GPU-accelerated Spark image
-	podman build -f Containerfile.spark-rapids -t $(REGISTRY)/spark-jobs-rapids:latest .
+build-images: ## Trigger all image builds on the cluster (requires setup-builds first)
+	$(KUBECTL) start-build spark-jobs   -n $(NAMESPACE) --follow
+	$(KUBECTL) start-build rec-trainer  -n $(NAMESPACE) --follow
+	$(KUBECTL) start-build llm-trainer  -n $(NAMESPACE) --follow
+	$(KUBECTL) start-build rec-server   -n $(NAMESPACE) --follow
 
-push-images: ## Push images to registry
-	podman push $(REGISTRY)/spark-jobs:latest
-	podman push $(REGISTRY)/rec-trainer:latest
-	podman push $(REGISTRY)/llm-trainer:latest
-	podman push $(REGISTRY)/rec-server:latest
+build-spark:     ## Build only spark-jobs image
+	$(KUBECTL) start-build spark-jobs  -n $(NAMESPACE) --follow
+
+build-rec:       ## Build only rec-trainer image
+	$(KUBECTL) start-build rec-trainer -n $(NAMESPACE) --follow
+
+build-llm:       ## Build only llm-trainer image
+	$(KUBECTL) start-build llm-trainer -n $(NAMESPACE) --follow
+
+build-serving:   ## Build only rec-server (serving) image
+	$(KUBECTL) start-build rec-server  -n $(NAMESPACE) --follow
+
+build-status:    ## Show status of all builds
+	$(KUBECTL) get builds -n $(NAMESPACE)
+
+push-images: ## Mirror images from internal registry to quay.io (optional)
+	$(KUBECTL) image mirror \
+	  image-registry.openshift-image-registry.svc:5000/$(NAMESPACE)/spark-jobs:latest \
+	  $(REGISTRY)/spark-jobs:latest
+	$(KUBECTL) image mirror \
+	  image-registry.openshift-image-registry.svc:5000/$(NAMESPACE)/rec-trainer:latest \
+	  $(REGISTRY)/rec-trainer:latest
+	$(KUBECTL) image mirror \
+	  image-registry.openshift-image-registry.svc:5000/$(NAMESPACE)/llm-trainer:latest \
+	  $(REGISTRY)/llm-trainer:latest
+	$(KUBECTL) image mirror \
+	  image-registry.openshift-image-registry.svc:5000/$(NAMESPACE)/rec-server:latest \
+	  $(REGISTRY)/rec-server:latest
 
 # ============================================================================
 # Infrastructure

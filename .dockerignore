@@ -1,0 +1,29 @@
+# Large data directories — never include in build context
+data/
+models/
+checkpoints/
+logs/
+
+# Git and IDE
+.git/
+.gitignore
+.env
+.env.example
+**/.DS_Store
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Docs (not needed in images)
+docs/
+
+# Notebooks
+**/*.ipynb

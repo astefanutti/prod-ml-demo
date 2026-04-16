@@ -1,6 +1,8 @@
-FROM quay.io/opendatahub/spark:3.5.0
+FROM registry.access.redhat.com/ubi9/python-312-minimal:1
 
 USER 0
+# Java JRE is required by Spark workers at runtime
+RUN microdnf install -y java-21-openjdk-headless gcc python3.12-devel && microdnf clean all
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 ENV UV_CACHE_DIR=/tmp/uv-cache
@@ -9,11 +11,18 @@ WORKDIR /opt/spark/work-dir
 
 COPY spark/ .
 
-# pandas and pyarrow are required for pandas UDFs (embedding_generation.py)
-RUN uv pip install --system --no-cache \
-    sentence-transformers==3.3.1 \
-    torch==2.5.1 \
-    pandas>=2.0.0 \
-    pyarrow>=14.0.0
+# Pin uv to python3.12 explicitly — ubi9 system default is 3.9
+RUN uv pip install --python python3.12 --no-cache \
+    "pyspark==3.5.3" \
+    "feast[spark]>=0.60.0" \
+    "pandas>=2.0.0" \
+    "pyarrow>=14.0.0" \
+    "sentence-transformers==3.3.1"
+
+# Resolve SPARK_HOME from pyspark install location under python3.12
+RUN python3.12 -c \
+    "import pyspark, os; open('/etc/spark_home','w').write(os.path.dirname(pyspark.__file__))"
+ENV SPARK_HOME=/usr/local/lib/python3.12/site-packages/pyspark
+ENV PATH=${SPARK_HOME}/bin:${PATH}
 
 USER 1001
