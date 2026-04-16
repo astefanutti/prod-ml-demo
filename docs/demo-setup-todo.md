@@ -208,17 +208,12 @@
 
 ### 🔴 Critical (silent failures / demo breaks)
 
-- [ ] **Fix `hf-credentials` secret key mismatch** — `make setup-secrets` creates key `HF_TOKEN` but `trainjobs.yaml` + `inferenceservices.yaml` reference key `token`
-  - Fix: change Makefile `--from-literal=HF_TOKEN=` → `--from-literal=token=`; recreate secret on cluster
-- [ ] **Standardize S3 bucket names** — inconsistent across 5+ files:
-  - `spark-application.yaml` uses `smartshop-raw`, `smartshop-features`
-  - `spark-application-rapids.yaml` uses `smartshop/raw`, `smartshop/features`
-  - `e2e_pipeline.py`, `trainjobs.yaml`, `sbatch_llm_finetune.sh` use `smartshop/features`, `smartshop/models`
-  - Fix: canonical buckets = `smartshop-raw`, `smartshop-features`, `smartshop-embeddings`, `smartshop-models` everywhere
+- [x] **Fix `hf-credentials` secret key mismatch** — Makefile now uses `--from-literal=token=`; secret recreated on cluster
+- [x] **Standardize S3 bucket names** — all files now use canonical buckets: `smartshop-raw`, `smartshop-features`, `smartshop-embeddings`, `smartshop-models`
+  - Fixed: `spark-application-rapids.yaml`, `e2e_pipeline.py`, `trainjobs.yaml`, `sbatch_llm_finetune.sh`
 - [ ] **Fix RAG → LLM URL/contract mismatch** — `serving/rag/server.py` calls `POST /v1/completions` (OpenAI-style) but `serving/llm/server.py` exposes `POST /v1/summarize` with its own JSON schema
   - Fix: point `LLM_URL` at `/v1/summarize`, send `{"product_name": ..., "review_text": ...}`
-- [ ] **Fix TrainJob DDP topology** — `trainjobs.yaml` has `numNodes: 4, nproc_per_node=1` but README/docs say 1 node × 4 GPUs
-  - Fix: `numNodes: 1`, `nproc_per_node=4`
+- [x] **Fix TrainJob DDP topology** — `trainjobs.yaml` now has `numNodes: 1`, `nproc_per_node=4`, resources `4×GPU / 64Gi` per node
 - [ ] **Fix rec model dimension mismatch** — serving pads item features with zeros to reach dim=8; training uses 6 item columns → checkpoint mismatch
   - Fix: save `user_feat_dim`/`item_feat_dim` in checkpoint dict at train time; load from checkpoint at serve time; remove padding
 

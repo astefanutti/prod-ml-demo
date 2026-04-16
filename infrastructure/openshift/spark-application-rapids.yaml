@@ -17,11 +17,11 @@ spec:
   mainApplicationFile: "local:///opt/spark/work-dir/feature_engineering.py"
   arguments:
     - "--input"
-    - "s3a://smartshop/raw/"
+    - "s3a://smartshop-raw/raw/"
     - "--output"
-    - "s3a://smartshop/features/"
+    - "s3a://smartshop-features/"
     - "--metadata-input"
-    - "s3a://smartshop/raw/metadata/"
+    - "s3a://smartshop-raw/raw/metadata/"
   sparkVersion: "3.5.0"
   restartPolicy:
     type: OnFailure

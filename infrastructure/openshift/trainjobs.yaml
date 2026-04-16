@@ -13,23 +13,23 @@ spec:
     command:
       - torchrun
     args:
-      - --nproc_per_node=1
+      - --nproc_per_node=4
       - training/recommendation/train.py
-      - --data-dir=s3://smartshop/features
-      - --output-dir=s3://smartshop/models/recommendation
+      - --data-dir=s3://smartshop-features
+      - --output-dir=s3://smartshop-models/recommendation
       - --epochs=10
       - --batch-size=1024
       - --embed-dim=64
-    numNodes: 4
+    numNodes: 1
     resourcesPerNode:
       requests:
-        cpu: "4"
-        memory: "16Gi"
-        nvidia.com/gpu: "1"
+        cpu: "16"
+        memory: "64Gi"
+        nvidia.com/gpu: "4"
       limits:
-        cpu: "8"
-        memory: "32Gi"
-        nvidia.com/gpu: "1"
+        cpu: "32"
+        memory: "128Gi"
+        nvidia.com/gpu: "4"
 
 ---
 # TrainingRuntime for DDP recommendation training
@@ -82,8 +82,8 @@ spec:
       - --nnodes=2
       - --nproc_per_node=4
       - training/llm/finetune.py
-      - --data-dir=s3://smartshop/llm_data
-      - --output-dir=s3://smartshop/models/llm-adapter
+      - --data-dir=s3://smartshop-features/llm_data
+      - --output-dir=s3://smartshop-models/llm-adapter
       - --epochs=3
       - --batch-size=4
       - --gradient-accumulation=4

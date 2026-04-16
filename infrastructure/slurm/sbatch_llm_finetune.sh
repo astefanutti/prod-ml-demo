@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=smartshop-llm-finetune
-#SBATCH --partition=a100
+#SBATCH --partition=slinky
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=4
@@ -37,8 +37,8 @@ export NCCL_NET_GDR_LEVEL=2
 export S3_ENDPOINT="${S3_ENDPOINT:-http://minio.smartshop.svc.cluster.local:9000}"
 
 # Data and output paths
-DATA_DIR="${DATA_DIR:-s3://smartshop/llm_data}"
-OUTPUT_DIR="${OUTPUT_DIR:-s3://smartshop/models/llm-adapter}"
+DATA_DIR="${DATA_DIR:-s3://smartshop-features/llm_data}"
+OUTPUT_DIR="${OUTPUT_DIR:-s3://smartshop-models/llm-adapter}"
 
 mkdir -p logs
 
