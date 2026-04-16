@@ -12,7 +12,7 @@ spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "${REGISTRY}/spark-jobs-rapids:latest"
+  image: "quay.io/abdhumal/smartshop-spark-jobs-rapids:latest"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/feature_engineering.py"
   arguments:
@@ -29,11 +29,9 @@ spec:
     onFailureRetryInterval: 30
   hadoopConf:
     fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
-    fs.s3a.access.key: "${MINIO_ACCESS_KEY}"
-    fs.s3a.secret.key: "${MINIO_SECRET_KEY}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   sparkConf:
     # RAPIDS Accelerator
     spark.plugins: "com.nvidia.spark.SQLPlugin"
