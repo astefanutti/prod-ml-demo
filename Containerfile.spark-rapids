@@ -1,14 +1,19 @@
+# NVIDIA RAPIDS+Spark — no quay equivalent exists for this combination.
+# Requires: docker login nvcr.io (free NGC account)
 FROM nvcr.io/nvidia/spark:3.5.0-rapids24.10
+
+USER 0
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_CACHE_DIR=/tmp/uv-cache
 
 WORKDIR /opt/spark/work-dir
 
-COPY spark/feature_engineering.py .
-COPY spark/text_preprocessing.py .
-COPY spark/embedding_generation.py .
+COPY spark/ .
 
-# Install Python dependencies for UDFs
-RUN pip install --no-cache-dir \
+RUN uv pip install --system --no-cache \
     sentence-transformers==3.3.1 \
-    torch==2.5.1
+    pandas>=2.0.0 \
+    pyarrow>=14.0.0
 
 USER 1001

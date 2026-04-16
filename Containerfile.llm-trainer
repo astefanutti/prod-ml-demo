@@ -1,15 +1,21 @@
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM registry.access.redhat.com/ubi9/python-312-minimal:1
+
+USER 0
+RUN microdnf install -y gcc python3.12-devel && microdnf clean all
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_CACHE_DIR=/tmp/uv-cache
 
 WORKDIR /app
 
 COPY requirements-training.txt .
-RUN pip install --no-cache-dir -r requirements-training.txt
+RUN uv pip install --system --no-cache -r requirements-training.txt
 
 COPY training/llm/ training/llm/
 
 USER 1001
 
-# --data-dir is required; the TrainJob spec always overrides this CMD.
-# For standalone testing: docker run ... --data-dir /local/llm_data --sample
+# TrainJob overrides this CMD with --nnodes=2 --nproc_per_node=4 and S3 paths.
+# Standalone testing: docker run ... (uses --sample on local data)
 CMD ["torchrun", "--nproc_per_node=1", "training/llm/finetune.py", \
      "--data-dir", "data/llm_data", "--sample"]

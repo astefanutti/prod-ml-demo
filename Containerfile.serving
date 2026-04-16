@@ -1,12 +1,18 @@
-FROM python:3.11-slim
+FROM registry.access.redhat.com/ubi9/python-312-minimal:1
+
+USER 0
+RUN microdnf install -y gcc python3.12-devel && microdnf clean all
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_CACHE_DIR=/tmp/uv-cache
 
 WORKDIR /app
 
 COPY requirements-serving.txt .
-RUN pip install --no-cache-dir -r requirements-serving.txt
+RUN uv pip install --system --no-cache -r requirements-serving.txt
 
 COPY serving/ serving/
-COPY training/recommendation/model.py training/recommendation/model.py
+COPY training/recommendation/model.py training/recommendation/__init__.py training/recommendation/
 COPY feast/feature_repo/ feast/feature_repo/
 
 USER 1001

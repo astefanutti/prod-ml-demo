@@ -10,25 +10,67 @@ Endpoints:
 """
 
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
-import numpy as np
 import torch
 from fastapi import FastAPI
 from feast import FeatureStore
 from pydantic import BaseModel
 
-# Add parent to path for model import
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../training/recommendation"))
-from model import TwoTowerModel
+from training.recommendation.model import TwoTowerModel
 
-app = FastAPI(title="SmartShop Recommendation Service")
+_model: Optional[TwoTowerModel] = None
+_feast_store: Optional[FeatureStore] = None
+_checkpoint: Optional[dict] = None
 
-# Globals (loaded on startup)
-model: Optional[TwoTowerModel] = None
-feast_store: Optional[FeatureStore] = None
-checkpoint: Optional[dict] = None
+USER_FEAT_COLS = [
+    "user_features:user_avg_rating",
+    "user_features:user_review_count",
+    "user_features:user_unique_items",
+    "user_features:user_avg_review_length",
+    "user_features:user_category_count",
+    "user_features:user_tenure_days",
+]
+ITEM_FEAT_COLS = [
+    "item_features:item_avg_rating",
+    "item_features:item_rating_stddev",
+    "item_features:item_review_count",
+    "item_features:item_total_helpful_votes",
+    "item_features:item_avg_review_length",
+    "item_features:item_price",
+]
+USER_FEAT_KEYS = [f.split(":")[1] for f in USER_FEAT_COLS]
+ITEM_FEAT_KEYS = [f.split(":")[1] for f in ITEM_FEAT_COLS]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _model, _feast_store, _checkpoint
+
+    model_path = os.environ.get("MODEL_PATH", "models/recommendation/best_model.pt")
+    feast_repo = os.environ.get("FEAST_REPO_PATH", "feast/feature_repo")
+
+    _checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+    _model = TwoTowerModel(
+        num_users=_checkpoint["num_users"],
+        num_items=_checkpoint["num_items"],
+        user_feat_dim=_checkpoint["user_feat_dim"],
+        item_feat_dim=_checkpoint["item_feat_dim"],
+        embed_dim=_checkpoint["embed_dim"],
+        hidden_dim=_checkpoint["hidden_dim"],
+    )
+    _model.load_state_dict(_checkpoint["model_state_dict"])
+    _model.eval()
+
+    _feast_store = FeatureStore(repo_path=feast_repo)
+    print(f"Model loaded from {model_path} "
+          f"(user_feat_dim={_checkpoint['user_feat_dim']}, "
+          f"item_feat_dim={_checkpoint['item_feat_dim']})")
+    yield
+
+
+app = FastAPI(title="SmartShop Recommendation Service", lifespan=lifespan)
 
 
 class RecommendRequest(BaseModel):
@@ -41,110 +83,70 @@ class RecommendResponse(BaseModel):
     recommendations: list[dict]
 
 
-@app.on_event("startup")
-def load_model():
-    global model, feast_store, checkpoint
-
-    model_path = os.environ.get("MODEL_PATH", "models/recommendation/best_model.pt")
-    feast_repo = os.environ.get("FEAST_REPO_PATH", "feast/feature_repo")
-
-    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-    model = TwoTowerModel(
-        num_users=checkpoint["num_users"],
-        num_items=checkpoint["num_items"],
-        embed_dim=checkpoint["embed_dim"],
-        hidden_dim=checkpoint["hidden_dim"],
-    )
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-
-    feast_store = FeatureStore(repo_path=feast_repo)
-    print(f"Model loaded from {model_path}")
+def _feat_row(d: dict, keys: list[str], n: int) -> list[float]:
+    """Extract feature values from a Feast result dict, defaulting to 0."""
+    return [float(d.get(k, [0.0])[0] or 0.0) for k in keys[:n]]
 
 
 @app.post("/v1/models/smartshop-rec:predict", response_model=RecommendResponse)
 def predict(request: RecommendRequest):
-    user_to_idx = checkpoint["user_to_idx"]
-    item_to_idx = checkpoint["item_to_idx"]
+    user_to_idx = _checkpoint["user_to_idx"]
+    item_to_idx = _checkpoint["item_to_idx"]
+    n_user = _checkpoint["user_feat_dim"]
+    n_item = _checkpoint["item_feat_dim"]
 
-    # Resolve user
     user_idx = user_to_idx.get(request.user_id, 0)
 
-    # Get user features from Feast online store
+    # User features — single Feast call
     try:
-        user_features = feast_store.get_online_features(
-            features=[
-                "user_features:user_avg_rating",
-                "user_features:user_review_count",
-                "user_features:user_unique_items",
-                "user_features:user_avg_review_length",
-                "user_features:user_category_count",
-                "user_features:user_tenure_days",
-            ],
+        user_result = _feast_store.get_online_features(
+            features=USER_FEAT_COLS[:n_user],
             entity_rows=[{"user_id": request.user_id}],
         ).to_dict()
-        user_feat_values = [
-            user_features.get("user_avg_rating", [0.0])[0] or 0.0,
-            user_features.get("user_review_count", [0])[0] or 0,
-            user_features.get("user_unique_items", [0])[0] or 0,
-            user_features.get("user_avg_review_length", [0.0])[0] or 0.0,
-            user_features.get("user_category_count", [0])[0] or 0,
-            user_features.get("user_tenure_days", [0])[0] or 0,
-        ]
+        user_feat_values = _feat_row(user_result, USER_FEAT_KEYS, n_user)
     except Exception:
-        user_feat_values = [0.0] * 6
+        user_feat_values = [0.0] * n_user
 
     user_ids_t = torch.tensor([user_idx], dtype=torch.long)
     user_feats_t = torch.tensor([user_feat_values], dtype=torch.float32)
 
-    # Score candidate items
     candidates = request.candidate_items or list(item_to_idx.keys())[:100]
-    scores = []
 
-    for item_id in candidates:
-        item_idx = item_to_idx.get(item_id, 0)
+    # Batch all candidate item lookups in a single Feast call
+    entity_rows = [{"item_id": iid} for iid in candidates]
+    try:
+        item_result = _feast_store.get_online_features(
+            features=ITEM_FEAT_COLS[:n_item],
+            entity_rows=entity_rows,
+        ).to_dict()
+        # item_result values are lists aligned to entity_rows order
+        item_feats_batch = [
+            [float(item_result.get(k, [0.0] * len(candidates))[i] or 0.0)
+             for k in ITEM_FEAT_KEYS[:n_item]]
+            for i in range(len(candidates))
+        ]
+    except Exception:
+        item_feats_batch = [[0.0] * n_item] * len(candidates)
 
-        # Get item features from Feast
-        try:
-            item_features = feast_store.get_online_features(
-                features=[
-                    "item_features:item_avg_rating",
-                    "item_features:item_rating_stddev",
-                    "item_features:item_review_count",
-                    "item_features:item_total_helpful_votes",
-                    "item_features:item_avg_review_length",
-                    "item_features:item_price",
-                ],
-                entity_rows=[{"item_id": item_id}],
-            ).to_dict()
-            item_feat_values = [
-                item_features.get("item_avg_rating", [0.0])[0] or 0.0,
-                item_features.get("item_rating_stddev", [0.0])[0] or 0.0,
-                item_features.get("item_review_count", [0])[0] or 0,
-                item_features.get("item_total_helpful_votes", [0])[0] or 0,
-                item_features.get("item_avg_review_length", [0.0])[0] or 0.0,
-                item_features.get("item_price", [0.0])[0] or 0.0,
-            ]
-        except Exception:
-            item_feat_values = [0.0] * 6
+    # Score all candidates in one forward pass
+    item_indices = [item_to_idx.get(iid, 0) for iid in candidates]
+    item_ids_t = torch.tensor(item_indices, dtype=torch.long)
+    item_feats_t = torch.tensor(item_feats_batch, dtype=torch.float32)
+    user_ids_exp = user_ids_t.expand(len(candidates))
+    user_feats_exp = user_feats_t.expand(len(candidates), -1)
 
-        # Pad to 8 features (model expects item_feat_dim=8)
-        item_feat_values.extend([0.0, 0.0])
+    with torch.no_grad():
+        logits = _model(user_ids_exp, user_feats_exp, item_ids_t, item_feats_t)
+        scores_t = torch.sigmoid(logits).tolist()
 
-        item_ids_t = torch.tensor([item_idx], dtype=torch.long)
-        item_feats_t = torch.tensor([item_feat_values], dtype=torch.float32)
-
-        with torch.no_grad():
-            logit = model(user_ids_t, user_feats_t, item_ids_t, item_feats_t)
-            score = torch.sigmoid(logit).item()
-
-        scores.append({"item_id": item_id, "score": round(score, 4)})
-
-    # Sort and return top-K
+    scores = [
+        {"item_id": iid, "score": round(s, 4)}
+        for iid, s in zip(candidates, scores_t)
+    ]
     scores.sort(key=lambda x: x["score"], reverse=True)
     return RecommendResponse(recommendations=scores[: request.top_k])
 
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "model_loaded": model is not None}
+    return {"status": "healthy", "model_loaded": _model is not None}
