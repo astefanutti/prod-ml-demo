@@ -154,10 +154,52 @@ KServe InferenceService
 
 ## Prerequisites
 
-- `oc` CLI installed and logged in as cluster admin
+- `oc` CLI installed and logged in (`oc login <api-url> --token=<token>`)
 - `helm` v3+ installed
-- `aws` CLI installed
-- This repo cloned locally
+- `aws` CLI installed (for MinIO bucket creation)
+- `make` installed
+- `jq` installed (for DSC condition checks)
+- `python3` with `pyarrow` installed (for Feast placeholder step)
+- This repo cloned locally: `git clone https://github.com/abhijeet-dhumal/prod-ml-demo.git`
+
+---
+
+## 0. First-time setup — credentials
+
+**Do this before any other step.** All Kubernetes secrets in this repo are created from a single `.env` file. The manifests contain `${VAR}` substitution markers — never plain `oc apply` a manifest with credentials directly.
+
+```bash
+# 1. Copy the template
+cp .env.example .env
+
+# 2. Fill in your values — open .env and set:
+#    MINIO_ACCESS_KEY, MINIO_SECRET_KEY
+#    REDIS_PASSWORD
+#    PG_USER, PG_PASSWORD, PG_DATABASE
+#    PG_CLUSTERIP  (get after postgres is deployed: oc get svc postgres -n smartshop -o jsonpath='{.spec.clusterIP}')
+#    HF_TOKEN      (from https://huggingface.co/settings/tokens — read scope is enough)
+#    MINIO_ENDPOINT_EXTERNAL  (after MinIO route is created)
+
+# 3. Create all Kubernetes secrets at once
+make setup-secrets
+```
+
+`make setup-secrets` creates these secrets across both namespaces:
+
+| Secret | Namespace | Contains |
+|---|---|---|
+| `smartshop-credentials` | `smartshop` | MinIO + Redis + Milvus endpoints and keys |
+| `redis-credentials` | `smartshop` | `REDIS_PASSWORD` |
+| `postgres-credentials` | `smartshop` | `PG_USER`, `PG_PASSWORD`, `PG_DATABASE` |
+| `feast-s3-credentials` | `smartshop` | MinIO keys for Feast offline store |
+| `feast-redis-secret` | `smartshop` | Redis password for Feast online store |
+| `minio-root-user` | `smartshop` | MinIO root credentials |
+| `hf-credentials` | `smartshop` | HuggingFace token (key: `token`) |
+| `mlflow-s3-credentials` | `redhat-ods-applications` | MinIO keys for MLflow artifact store |
+| `mlflow-postgres-secret` | `redhat-ods-applications` | PostgreSQL URI for MLflow backend |
+
+> **Re-run `make setup-secrets` any time you rotate credentials or set up a new cluster.**
+> It uses `--dry-run=client -o yaml | oc apply -f -` so it is idempotent.
 
 ---
 
@@ -384,7 +426,7 @@ oc get jobs -n smartshop -w
 # Scale down
 oc scale deployment minio -n smartshop --replicas=0
 
-# Apply the NFS PVC (infrastructure/smartshop/shared-storage.yaml)
+# Apply the NFS PVC
 oc apply -f infrastructure/smartshop/shared-storage.yaml
 
 # Point MinIO at the new PVC
@@ -393,10 +435,11 @@ oc patch deployment minio -n smartshop --type=json -p='[
    "value": "smartshop-shared-storage"}
 ]'
 
-# Set credentials (replace with your chosen values)
+# Create minio-root-user secret from .env values
+source .env
 oc create secret generic minio-root-user \
-  --from-literal=MINIO_ROOT_USER=<your-minio-access-key> \
-  --from-literal=MINIO_ROOT_PASSWORD=<your-minio-secret-key> \
+  --from-literal=MINIO_ROOT_USER="$MINIO_ACCESS_KEY" \
+  --from-literal=MINIO_ROOT_PASSWORD="$MINIO_SECRET_KEY" \
   -n smartshop --dry-run=client -o yaml | oc apply -f -
 
 # Scale back up
@@ -410,23 +453,26 @@ oc delete pvc minio -n smartshop
 **Create SmartShop buckets:**
 
 ```bash
+source .env
 export S3=https://$(oc get route minio-s3 -n smartshop -o jsonpath='{.spec.host}')
 
 for bucket in smartshop-raw smartshop-features smartshop-models smartshop-embeddings milvus; do
-  AWS_ACCESS_KEY_ID=<your-minio-access-key> AWS_SECRET_ACCESS_KEY=<your-minio-secret-key> \
+  AWS_ACCESS_KEY_ID="$MINIO_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$MINIO_SECRET_KEY" \
     aws s3 mb s3://$bucket --endpoint-url $S3 --no-verify-ssl
 done
 ```
 
-![S4 MinIO browser - Storage Management, no buckets yet](./assets/04-minio-s4-console.png)
-
-**Create shared credentials secret:**
+Update `MINIO_ENDPOINT_EXTERNAL` in `.env` with the MinIO S3 route hostname, then run `make setup-secrets` to create the consolidated `smartshop-credentials` secret:
 
 ```bash
-# infrastructure/smartshop/credentials.yaml — consolidated secret for all components.
-# Update MINIO_ENDPOINT_EXTERNAL with your cluster domain first.
-oc apply -f infrastructure/smartshop/credentials.yaml
+# Get the external MinIO S3 URL
+oc get route minio-s3 -n smartshop -o jsonpath='{.spec.host}'
+# → set MINIO_ENDPOINT_EXTERNAL=https://<that host> in .env
+
+make setup-secrets
 ```
+
+![S4 MinIO browser - Storage Management, no buckets yet](./assets/04-minio-s4-console.png)
 
 > **MinIO note:** Open-source MinIO is used here for simplicity. For production use
 > **ODF (OpenShift Data Foundation)** or **AIStor** (MinIO's enterprise successor).
@@ -439,20 +485,25 @@ oc apply -f infrastructure/smartshop/credentials.yaml
 ## 6. Deploy Redis + RedisInsight UI
 
 ```bash
-oc apply -f infrastructure/redis/redis.yaml
+# Secrets must exist before the deployment reads them
+make setup-secrets
+
+# Deploy Redis + RedisInsight (envsubst fills ${REDIS_PASSWORD} from .env)
+envsubst < infrastructure/redis/redis.yaml | oc apply -f -
 oc rollout status deployment/redis deployment/redisinsight -n smartshop
 ```
 
 This creates:
-- `redis-data` PVC — 10Gi, `nfs-csi`, `ReadWriteMany` (RWO would also work — only one Redis pod mounts it)
-- `redis-credentials` Secret — password from `infrastructure/redis/redis.yaml`
+- `redis-data` PVC — 10Gi, `nfs-csi`, RWX
+- `redis-credentials` Secret — password from `REDIS_PASSWORD` in `.env`
 - Route for RedisInsight UI
 
 **Verify:**
 
 ```bash
+source .env
 oc exec -it deployment/redis -n smartshop -- \
-  redis-cli -a <your-redis-password> ping
+  redis-cli -a "$REDIS_PASSWORD" ping
 # PONG
 ```
 
@@ -495,10 +546,14 @@ Feast is installed and managed by the RHOAI Feast Operator (enabled by default i
 
 ### 8a — Apply Secrets and FeatureStore CR
 
-`infrastructure/feast/feast-operator.yaml` contains everything in one file: the `feast-s3-credentials` Secret (MinIO access), the `feast-redis-secret` Secret (Redis password), and the `FeatureStore` CR itself.
+`infrastructure/feast/feast-operator.yaml` contains the `feast-s3-credentials` Secret, the `feast-redis-secret` Secret, and the `FeatureStore` CR. The secret fields use `${VAR}` markers — use `envsubst` or `make setup-secrets` (which also creates the Feast secrets):
 
 ```bash
-oc apply -f infrastructure/feast/feast-operator.yaml
+# Ensure .env is filled in, then:
+make setup-secrets
+
+# Apply the FeatureStore CR (non-secret parts are fine to apply directly)
+envsubst < infrastructure/feast/feast-operator.yaml | oc apply -f -
 ```
 
 The CR configures:
@@ -723,48 +778,33 @@ MLflow is operator-managed in `redhat-ods-applications`. It requires a PostgreSQ
 ### 9a — Deploy PostgreSQL in `smartshop`
 
 ```bash
-oc apply -f infrastructure/mlflow/postgres.yaml
+# Secrets use ${VAR} markers — use envsubst
+envsubst < infrastructure/mlflow/postgres.yaml | oc apply -f -
 oc rollout status deployment/postgres -n smartshop
 ```
 
-The manifest at `infrastructure/mlflow/postgres.yaml` creates:
-- `postgres` Deployment — `postgres:15` image, 1Gi NFS PVC (`postgres-data`)
+The manifest creates:
+- `postgres` Deployment — OpenShift-native `postgresql:15-el9` image, 5Gi NFS PVC (`postgres-data`)
 - `postgres` Service on port 5432
-- `postgres-credentials` Secret with `POSTGRES_USER=feast`, `POSTGRES_PASSWORD=feast`, `POSTGRES_DB=mlflow`
+- `postgres-credentials` Secret populated from `PG_USER`, `PG_PASSWORD`, `PG_DATABASE` in `.env`
 
 ### 9b — Update MLflow Backend Secret
-
-Point MLflow's backend store at the new PostgreSQL instance.
 
 > **OVN-K DNS gotcha:** MLflow's `NetworkPolicy` in `redhat-ods-applications` has
 > `policyTypes: [Ingress, Egress]` (operator-managed). DNS lookups for cross-namespace
 > CNAME chains fail under OVN-K even though port 53 is listed in the egress rules.
 > Use the postgres Service **ClusterIP** directly — TCP connectivity works fine.
 
-```bash
-POSTGRES_IP=$(oc get svc postgres -n smartshop -o jsonpath='{.spec.clusterIP}')
-# Use the same user/password set in infrastructure/mlflow/postgres.yaml
-PG_USER=<your-pg-user>
-PG_PASS=<your-pg-password>
-
-oc create secret generic mlflow-postgres-secret \
-  --from-literal=uri="postgresql+psycopg2://${PG_USER}:${PG_PASS}@${POSTGRES_IP}:5432/mlflow?sslmode=disable" \
-  -n redhat-ods-applications \
-  --dry-run=client -o yaml | oc apply -f -
-```
-
-### 9c — Create S3 Credentials and Patch MLflow CR
-
-MLflow writes artifacts to MinIO — the S3 credentials must be in `redhat-ods-applications`:
+After postgres is running, get its ClusterIP and add it to `.env`:
 
 ```bash
-oc create secret generic mlflow-s3-credentials \
-  --from-literal=AWS_ACCESS_KEY_ID=<your-minio-access-key> \
-  --from-literal=AWS_SECRET_ACCESS_KEY=<your-minio-secret-key> \
-  --from-literal=MLFLOW_S3_ENDPOINT_URL=http://minio.smartshop.svc.cluster.local:9000 \
-  --from-literal=AWS_DEFAULT_REGION=us-east-1 \
-  -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
+oc get svc postgres -n smartshop -o jsonpath='{.spec.clusterIP}'
+# e.g. 172.30.26.132 — set PG_CLUSTERIP=<this value> in .env
 ```
+
+Then re-run `make setup-secrets` to create/update `mlflow-postgres-secret` and `mlflow-s3-credentials` in `redhat-ods-applications` with the correct values from `.env`.
+
+### 9c — Patch MLflow CR for S3 artifacts
 
 Patch the MLflow CR to use S3 as artifact destination (see `infrastructure/mlflow/mlflow-cr.yaml`):
 
@@ -840,9 +880,12 @@ When the job completes, the following MinIO buckets will be populated with Parqu
 After ETL completes, push features from the offline store (MinIO) into the online store (Redis):
 
 ```bash
-# Run inside a pod that has feast installed, or use the feast server pod
-oc exec -it deployment/feast-smartshop-feast -n smartshop -c feast-offline-server -- \
-  feast -c /feast-registry materialize-incremental $(date -u +%Y-%m-%dT%H:%M:%S)
+FEAST_POD=$(oc get pod -n smartshop -l app=feast-smartshop-feast \
+  -o jsonpath='{.items[0].metadata.name}')
+
+oc exec -n smartshop $FEAST_POD -c offline -- \
+  bash -c "cd /feast-data/smartshop/feast/feature_repo && \
+           feast materialize-incremental $(date -u +%Y-%m-%dT%H:%M:%S)"
 ```
 
 ---
@@ -858,10 +901,9 @@ oc exec -it deployment/feast-smartshop-feast -n smartshop -c feast-offline-serve
 ### 11a — Recommendation Model (DDP, 4 GPUs, 1 node)
 
 ```bash
-# Create HuggingFace credentials secret (required by LLM trainer; optional for rec trainer)
-oc create secret generic hf-credentials \
-  --from-literal=token=<YOUR_HF_TOKEN> \
-  -n smartshop --dry-run=client -o yaml | oc apply -f -
+# hf-credentials secret is already created by `make setup-secrets` (key: token)
+# Verify:
+oc get secret hf-credentials -n smartshop -o jsonpath='{.data.token}' | base64 -d
 
 # Apply TrainingRuntime and TrainJob
 oc apply -f infrastructure/openshift/trainjobs.yaml
@@ -963,9 +1005,18 @@ oc get inferenceservice -n smartshop -w
 
 | Item | Status | Notes |
 |---|---|---|
-| MLflow PostgreSQL | **Broken** | Deploy `infrastructure/mlflow/postgres.yaml` (needs to be created), update `mlflow-postgres-secret` to point to `postgres.smartshop.svc.cluster.local` |
-| Spark ETL job | **Placeholder** | Needs `quay.io/smartshop/spark-jobs:latest` image |
-| Recommendation model training | **Placeholder** | Needs `quay.io/smartshop/rec-trainer:latest` image |
-| LLM fine-tuning | **Placeholder** | Needs `quay.io/smartshop/llm-trainer:latest` image + HF token |
-| InferenceService | **Placeholder** | Needs trained model + `quay.io/smartshop/rec-server:latest` image |
-| Gradio demo UI | **Not started** | — |
+| Secrets management | **Done ✅** | `.env` → `make setup-secrets` creates all K8s secrets across both namespaces |
+| MinIO (NFS-backed) | **Done ✅** | Deployed, 5 buckets created, credentials wired |
+| Redis + RedisInsight | **Done ✅** | Running, NFS PVC, password-auth confirmed |
+| Milvus + Attu | **Done ✅** | Standalone mode, NFS-backed, S3 backend for segments |
+| Feast Feature Store | **Done ✅** | `feast apply` ran, 3 feature views registered, visible in RHOAI dashboard |
+| MLflow | **Done ✅** | PostgreSQL backend (ClusterIP workaround for OVN-K), MinIO S3 artifacts, dashboard accessible |
+| Slurm (Slinky) | **Done ✅** | Operator installed, cluster deployed, 2 worker nodes, `sinfo` shows idle |
+| Spark Operator | **Done ✅** | Enabled via DSC `managementState: Managed`, RBAC applied to `smartshop` |
+| Amazon Reviews dataset download | **Pending** | Run `make data-full` (49GB), upload to `smartshop-raw/raw/` |
+| Spark ETL job | **Pending** | Needs `quay.io/smartshop/spark-jobs:latest` custom image built first |
+| Feast materialize | **Pending** | Runs after Spark ETL populates `smartshop-features/` |
+| Recommendation model training | **Pending** | Needs `quay.io/smartshop/rec-trainer:latest` image |
+| LLM fine-tuning | **Pending** | Needs `quay.io/smartshop/llm-trainer:latest` image |
+| KServe InferenceServices | **Pending** | Needs trained models + serving images (`rec-server`, `llm-server`, `rag-server`) |
+| Gradio demo UI | **Pending** | `demo/app.py` exists — needs `RECOMMEND_URL`, `SUMMARIZE_URL`, `RAG_URL` env vars set to cluster endpoints |
