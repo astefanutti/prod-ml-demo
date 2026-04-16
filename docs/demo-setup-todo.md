@@ -5,19 +5,21 @@
 
 ---
 
-## Phase 0 — Cluster Access & Infra Setup
+## Phase 0 — Cluster Access & Infra Setup ✅ MOSTLY DONE
 > Owner: Karel / Umberto (IBM cluster) + team infra lead
 > Blocker for everything else
 
-- [ ] Get permissions on IBM cluster (RHOAI 3.4 EA2 RC2) — reply to Karel/Umberto thread
 - [ ] Confirm GPU node availability: at least 2 nodes × 4 GPUs for FSDP LLM job
-- [ ] Create `smartshop` namespace on OpenShift
-- [ ] Install / verify Spark Operator is available on cluster
+- [x] Create `smartshop` namespace on OpenShift — `infrastructure/smartshop/namespace.yaml`
+- [x] Install / verify Spark Operator is available on cluster — confirmed, screenshots in `docs/assets/`
 - [ ] Install / verify Kubeflow Trainer v2 operator (`TrainJob` CRD present)
-- [ ] Install / verify Slurm + Slinky operator
-- [ ] Deploy MinIO — confirm S3 bucket `smartshop` accessible
-- [ ] Deploy Redis — confirm online store reachable
-- [ ] Deploy Milvus — confirm vector store reachable
+- [x] Install / verify Slurm + Slinky operator — deployed via OperatorHub, screenshots in `docs/assets/`
+- [x] Deploy MinIO — AIStor operator installed, `smartshop-raw/features/embeddings/models` buckets created
+- [x] Deploy Redis — running in `smartshop`, online store reachable; RedisInsight UI exposed
+- [x] Deploy Milvus — running in `smartshop` via Helm (`infrastructure/milvus/`), NFS + MinIO S3 backend
+- [x] Deploy Feast Feature Store — operator-managed, visible in RHOAI dashboard (`infrastructure/feast/`)
+- [x] Deploy MLflow — running in `redhat-ods-applications`, Postgres backend + MinIO S3 artifacts (`infrastructure/mlflow/`)
+- [x] All secrets wired via `.env` + `make setup-secrets` — no hardcoded credentials in repo
 - [ ] Confirm RHOAI Model Registry is enabled in the namespace
 - [ ] Confirm KServe is available and can schedule GPU InferenceServices
 - [ ] Set resource quotas / limits to not conflict with other teams on cluster
@@ -99,7 +101,10 @@
 > Jira: [RHOAIENG-57407](https://redhat.atlassian.net/browse/RHOAIENG-57407)
 > Owner: dev team
 
-- [ ] Deploy MLflow tracking server in `smartshop` namespace
+- [x] Deploy MLflow tracking server — running in `redhat-ods-applications` (RHOAI-managed operator)
+  - [x] PostgreSQL backend (`infrastructure/mlflow/postgres.yaml`) — OpenShift-native `postgresql:15-el9` image
+  - [x] S3 artifact store → `s3://smartshop-models` via MinIO (`infrastructure/mlflow/mlflow-cr.yaml`)
+  - [x] OVN-K DNS workaround documented — using Postgres ClusterIP directly in backend secret
 - [ ] Update `training/recommendation/train.py` to log:
   - Hyperparams (lr, batch size, embed_dim, hidden_dim)
   - Per-epoch train/val loss
