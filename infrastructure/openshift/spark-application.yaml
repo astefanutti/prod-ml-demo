@@ -1,50 +1,47 @@
 ---
 # Kubeflow Spark Operator - Feature Engineering Job
-# S3 credentials are injected from the smartshop-credentials Secret via envFrom.
-# hadoopConf reads credentials from AWS_* env vars provided by that secret.
+# S3 credentials injected from smartshop-credentials Secret via envFrom.
 # Apply with: envsubst < infrastructure/openshift/spark-application.yaml | oc apply -f -
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
   name: smartshop-feature-engineering
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/abdhumal/smartshop-spark-jobs:latest"
+  image: "${SPARK_JOBS_IMAGE}"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/feature_engineering.py"
   arguments:
     - "--input"
-    - "s3a://smartshop-raw/raw/"
+    - "s3a://${S3_RAW_BUCKET}/raw/"
     - "--output"
-    - "s3a://smartshop-features/"
+    - "s3a://${S3_FEATURES_BUCKET}/"
     - "--metadata-input"
-    - "s3a://smartshop-raw/raw/metadata/"
+    - "s3a://${S3_RAW_BUCKET}/raw/metadata/"
   sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
     onFailureRetryInterval: 30
   hadoopConf:
-    fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+    fs.s3a.endpoint: "${MINIO_ENDPOINT}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    # EnvironmentVariableCredentialsProvider reads AWS_ACCESS_KEY_ID and
-    # AWS_SECRET_ACCESS_KEY from pod env, which are injected via envFrom below.
     fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
-    memory: "4g"
+    memory: "${SPARK_DRIVER_MEMORY}"
     serviceAccount: spark
     envFrom:
       - secretRef:
           name: smartshop-credentials
   executor:
-    cores: 4
-    instances: 4
-    memory: "8g"
+    cores: ${SPARK_EXECUTOR_CORES}
+    instances: ${SPARK_EXECUTOR_INSTANCES}
+    memory: "${SPARK_EXECUTOR_MEMORY}"
     envFrom:
       - secretRef:
           name: smartshop-credentials
@@ -55,39 +52,39 @@ apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
   name: smartshop-text-preprocessing
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/abdhumal/smartshop-spark-jobs:latest"
+  image: "${SPARK_JOBS_IMAGE}"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/text_preprocessing.py"
   arguments:
     - "--input"
-    - "s3a://smartshop-raw/raw/"
+    - "s3a://${S3_RAW_BUCKET}/raw/"
     - "--output"
-    - "s3a://smartshop-features/llm_data/"
+    - "s3a://${S3_FEATURES_BUCKET}/llm_data/"
   sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
   hadoopConf:
-    fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+    fs.s3a.endpoint: "${MINIO_ENDPOINT}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
     fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
-    memory: "4g"
+    memory: "${SPARK_DRIVER_MEMORY}"
     serviceAccount: spark
     envFrom:
       - secretRef:
           name: smartshop-credentials
   executor:
-    cores: 4
-    instances: 4
-    memory: "8g"
+    cores: ${SPARK_EXECUTOR_CORES}
+    instances: ${SPARK_EXECUTOR_INSTANCES}
+    memory: "${SPARK_EXECUTOR_MEMORY}"
     envFrom:
       - secretRef:
           name: smartshop-credentials
@@ -98,39 +95,41 @@ apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
   name: smartshop-embedding-generation
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/abdhumal/smartshop-spark-jobs:latest"
+  image: "${SPARK_JOBS_IMAGE}"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/embedding_generation.py"
   arguments:
     - "--input"
-    - "s3a://smartshop-raw/raw/"
+    - "s3a://${S3_RAW_BUCKET}/raw/"
     - "--output"
-    - "s3a://smartshop-embeddings/review_embeddings/"
+    - "s3a://${S3_EMBEDDINGS_BUCKET}/review_embeddings/"
+    - "--model"
+    - "${EMBED_MODEL}"
   sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
   hadoopConf:
-    fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+    fs.s3a.endpoint: "${MINIO_ENDPOINT}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
     fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
-    memory: "8g"
+    memory: "${SPARK_DRIVER_MEMORY}"
     serviceAccount: spark
     envFrom:
       - secretRef:
           name: smartshop-credentials
   executor:
-    cores: 4
-    instances: 8
-    memory: "16g"
+    cores: ${SPARK_EXECUTOR_CORES}
+    instances: ${SPARK_EMBED_EXECUTOR_INSTANCES}
+    memory: "${SPARK_EMBED_EXECUTOR_MEMORY}"
     envFrom:
       - secretRef:
           name: smartshop-credentials

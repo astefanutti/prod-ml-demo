@@ -4,27 +4,45 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: smartshop-rec
-  namespace: smartshop
+  namespace: ${NAMESPACE}
   annotations:
     serving.kserve.io/autoscalerClass: hpa
     serving.kserve.io/targetUtilizationPercentage: "80"
 spec:
   predictor:
-    minReplicas: 1
-    maxReplicas: 5
+    minReplicas: ${REC_MIN_REPLICAS}
+    maxReplicas: ${REC_MAX_REPLICAS}
     containers:
       - name: smartshop-rec
-        image: quay.io/abdhumal/smartshop-rec-server:latest
+        image: ${REC_SERVER_IMAGE}
         ports:
           - containerPort: 8000
             protocol: TCP
         env:
           - name: MODEL_PATH
-            value: "/models/recommendation/best_model.pt"
+            value: "${MODEL_PATH}"
           - name: FEAST_REPO_PATH
-            value: "/feast/feature_repo"
+            value: "${FEAST_REPO_PATH}"
           - name: REDIS_HOST
-            value: "redis.smartshop.svc.cluster.local"
+            value: "${REDIS_HOST}"
+          - name: REDIS_PORT
+            value: "${REDIS_PORT}"
+          - name: MLFLOW_TRACKING_URI
+            value: "${MLFLOW_TRACKING_URI}"
+          - name: AWS_ENDPOINT_URL_S3
+            value: "${MINIO_ENDPOINT}"
+          - name: AWS_DEFAULT_REGION
+            value: "${AWS_DEFAULT_REGION}"
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: smartshop-credentials
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: smartshop-credentials
+                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests:
             cpu: "2"
@@ -32,13 +50,6 @@ spec:
           limits:
             cpu: "4"
             memory: "8Gi"
-        volumeMounts:
-          - name: model-volume
-            mountPath: /models
-    volumes:
-      - name: model-volume
-        persistentVolumeClaim:
-          claimName: smartshop-models
 
 ---
 # KServe - LLM (vLLM) for Review Summarization
@@ -46,22 +57,22 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: smartshop-llm
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   predictor:
-    minReplicas: 1
-    maxReplicas: 3
+    minReplicas: ${LLM_MIN_REPLICAS}
+    maxReplicas: ${LLM_MAX_REPLICAS}
     containers:
       - name: vllm
         image: vllm/vllm-openai:latest
         args:
           - --model
-          - mistralai/Mistral-7B-Instruct-v0.3
+          - ${LLM_BASE_MODEL}
           - --enable-lora
           - --lora-modules
-          - smartshop-adapter=/models/llm-adapter
+          - smartshop-adapter=${LLM_ADAPTER_PATH}
           - --max-model-len
-          - "4096"
+          - "${MAX_MODEL_LEN}"
           - --gpu-memory-utilization
           - "0.9"
         env:
@@ -70,6 +81,22 @@ spec:
               secretKeyRef:
                 name: hf-credentials
                 key: token
+          - name: HF_HOME
+            value: "${HF_HOME}"
+          - name: AWS_ENDPOINT_URL_S3
+            value: "${MINIO_ENDPOINT}"
+          - name: AWS_DEFAULT_REGION
+            value: "${AWS_DEFAULT_REGION}"
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: smartshop-credentials
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: smartshop-credentials
+                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests:
             cpu: "4"
@@ -79,13 +106,6 @@ spec:
             cpu: "8"
             memory: "64Gi"
             nvidia.com/gpu: "1"
-        volumeMounts:
-          - name: model-volume
-            mountPath: /models
-    volumes:
-      - name: model-volume
-        persistentVolumeClaim:
-          claimName: smartshop-models
 
 ---
 # KServe - RAG Q&A Service
@@ -93,26 +113,46 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   name: smartshop-rag
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   predictor:
-    minReplicas: 1
-    maxReplicas: 3
+    minReplicas: ${RAG_MIN_REPLICAS}
+    maxReplicas: ${RAG_MAX_REPLICAS}
     containers:
       - name: smartshop-rag
-        image: quay.io/abdhumal/smartshop-rec-server:latest
+        image: ${REC_SERVER_IMAGE}
         ports:
           - containerPort: 8002
             protocol: TCP
         env:
           - name: FEAST_REPO_PATH
-            value: "/feast/feature_repo"
+            value: "${FEAST_REPO_PATH}"
           - name: LLM_URL
-            value: "http://smartshop-llm.smartshop.svc.cluster.local/v1/completions"
+            value: "http://smartshop-llm.${NAMESPACE}.svc.cluster.local/v1/completions"
           - name: REDIS_HOST
-            value: "redis.smartshop.svc.cluster.local"
+            value: "${REDIS_HOST}"
+          - name: REDIS_PORT
+            value: "${REDIS_PORT}"
           - name: MILVUS_HOST
-            value: "milvus.smartshop.svc.cluster.local"
+            value: "${MILVUS_HOST}"
+          - name: MILVUS_PORT
+            value: "${MILVUS_PORT}"
+          - name: EMBED_MODEL
+            value: "${EMBED_MODEL}"
+          - name: AWS_ENDPOINT_URL_S3
+            value: "${MINIO_ENDPOINT}"
+          - name: AWS_DEFAULT_REGION
+            value: "${AWS_DEFAULT_REGION}"
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: smartshop-credentials
+                key: AWS_ACCESS_KEY_ID
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: smartshop-credentials
+                key: AWS_SECRET_ACCESS_KEY
         resources:
           requests:
             cpu: "2"

@@ -4,32 +4,33 @@ apiVersion: trainer.kubeflow.org/v1alpha1
 kind: TrainJob
 metadata:
   name: smartshop-rec-train
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   runtimeRef:
     name: smartshop-rec-ddp
   trainer:
-    image: quay.io/abdhumal/smartshop-rec-trainer:latest
+    image: ${REC_TRAINER_IMAGE}
     command:
       - torchrun
     args:
-      - --nproc_per_node=4
+      - --nproc_per_node=${REC_GPUS_PER_NODE}
       - training/recommendation/train.py
-      - --data-dir=s3://smartshop-features
-      - --output-dir=s3://smartshop-models/recommendation
-      - --epochs=10
-      - --batch-size=1024
-      - --embed-dim=64
-    numNodes: 1
+      - --data-dir=s3://${S3_FEATURES_BUCKET}
+      - --output-dir=s3://${S3_MODELS_BUCKET}/recommendation
+      - --epochs=${REC_TRAIN_EPOCHS}
+      - --batch-size=${REC_TRAIN_BATCH_SIZE}
+      - --embed-dim=${REC_EMBED_DIM}
+      - --hidden-dim=${REC_HIDDEN_DIM}
+    numNodes: ${REC_TRAIN_NODES}
     resourcesPerNode:
       requests:
         cpu: "16"
         memory: "64Gi"
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${REC_GPUS_PER_NODE}"
       limits:
         cpu: "32"
         memory: "128Gi"
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${REC_GPUS_PER_NODE}"
 
 ---
 # TrainingRuntime for DDP recommendation training
@@ -37,7 +38,7 @@ apiVersion: trainer.kubeflow.org/v1alpha1
 kind: TrainingRuntime
 metadata:
   name: smartshop-rec-ddp
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   template:
     spec:
@@ -51,13 +52,15 @@ spec:
                     - name: trainer
                       env:
                         - name: FEAST_REPO_PATH
-                          value: "feast/feature_repo"
+                          value: "${FEAST_REPO_PATH}"
                         - name: S3_ENDPOINT
-                          value: "http://minio.smartshop.svc.cluster.local:9000"
+                          value: "${MINIO_ENDPOINT}"
                         - name: AWS_ENDPOINT_URL_S3
-                          value: "http://minio.smartshop.svc.cluster.local:9000"
+                          value: "${MINIO_ENDPOINT}"
                         - name: AWS_DEFAULT_REGION
-                          value: "us-east-1"
+                          value: "${AWS_DEFAULT_REGION}"
+                        - name: MLFLOW_TRACKING_URI
+                          value: "${MLFLOW_TRACKING_URI}"
                         - name: AWS_ACCESS_KEY_ID
                           valueFrom:
                             secretKeyRef:
@@ -83,34 +86,35 @@ apiVersion: trainer.kubeflow.org/v1alpha1
 kind: TrainJob
 metadata:
   name: smartshop-llm-finetune
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   runtimeRef:
     name: smartshop-llm-fsdp-slurm
     kind: ClusterTrainingRuntime
   trainer:
-    image: quay.io/abdhumal/smartshop-llm-trainer:latest
+    image: ${LLM_TRAINER_IMAGE}
     command:
       - torchrun
     args:
-      - --nnodes=2
-      - --nproc_per_node=4
+      - --nnodes=${LLM_TRAIN_NODES}
+      - --nproc_per_node=${LLM_GPUS_PER_NODE}
       - training/llm/finetune.py
-      - --data-dir=s3://smartshop-features/llm_data
-      - --output-dir=s3://smartshop-models/llm-adapter
-      - --epochs=3
-      - --batch-size=4
-      - --gradient-accumulation=4
-    numNodes: 2
+      - --data-dir=s3://${S3_FEATURES_BUCKET}/llm_data
+      - --output-dir=s3://${S3_MODELS_BUCKET}/llm-adapter
+      - --model=${LLM_BASE_MODEL}
+      - --epochs=${LLM_TRAIN_EPOCHS}
+      - --batch-size=${LLM_TRAIN_BATCH_SIZE}
+      - --gradient-accumulation=${LLM_GRAD_ACCUM}
+    numNodes: ${LLM_TRAIN_NODES}
     resourcesPerNode:
       requests:
         cpu: "16"
         memory: "64Gi"
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"
       limits:
         cpu: "32"
         memory: "128Gi"
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"
 
 ---
 # ClusterTrainingRuntime for FSDP LLM training dispatched to Slurm
@@ -135,16 +139,34 @@ spec:
                             secretKeyRef:
                               name: hf-credentials
                               key: token
+                        - name: HF_HOME
+                          value: "${HF_HOME}"
                         - name: S3_ENDPOINT
-                          value: "http://minio.smartshop.svc.cluster.local:9000"
+                          value: "${MINIO_ENDPOINT}"
+                        - name: AWS_ENDPOINT_URL_S3
+                          value: "${MINIO_ENDPOINT}"
+                        - name: AWS_DEFAULT_REGION
+                          value: "${AWS_DEFAULT_REGION}"
+                        - name: MLFLOW_TRACKING_URI
+                          value: "${MLFLOW_TRACKING_URI}"
                         - name: NCCL_DEBUG
                           value: "INFO"
+                        - name: AWS_ACCESS_KEY_ID
+                          valueFrom:
+                            secretKeyRef:
+                              name: smartshop-credentials
+                              key: AWS_ACCESS_KEY_ID
+                        - name: AWS_SECRET_ACCESS_KEY
+                          valueFrom:
+                            secretKeyRef:
+                              name: smartshop-credentials
+                              key: AWS_SECRET_ACCESS_KEY
                       volumeMounts:
                         - name: shm
                           mountPath: /dev/shm
                       resources:
                         requests:
-                          nvidia.com/gpu: "4"
+                          nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"
                   volumes:
                     - name: shm
                       emptyDir:

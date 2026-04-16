@@ -1,18 +1,17 @@
 ---
 # BuildConfig — spark-jobs
-# Builds Containerfile.spark from the git repo and pushes to the internal ImageStream.
-# Trigger: oc start-build spark-jobs -n smartshop
+# Trigger: oc start-build spark-jobs -n ${NAMESPACE}
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
   name: spark-jobs
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   source:
     type: Git
     git:
-      uri: https://github.com/abhijeet-dhumal/prod-ml-demo.git
-      ref: refine-cluster-infra-setup
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
   strategy:
     type: Docker
     dockerStrategy:
@@ -38,13 +37,13 @@ apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
   name: rec-trainer
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   source:
     type: Git
     git:
-      uri: https://github.com/abhijeet-dhumal/prod-ml-demo.git
-      ref: refine-cluster-infra-setup
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
   strategy:
     type: Docker
     dockerStrategy:
@@ -67,13 +66,13 @@ apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
   name: llm-trainer
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   source:
     type: Git
     git:
-      uri: https://github.com/abhijeet-dhumal/prod-ml-demo.git
-      ref: refine-cluster-infra-setup
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
   strategy:
     type: Docker
     dockerStrategy:
@@ -96,13 +95,13 @@ apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
   name: rec-server
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   source:
     type: Git
     git:
-      uri: https://github.com/abhijeet-dhumal/prod-ml-demo.git
-      ref: refine-cluster-infra-setup
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
   strategy:
     type: Docker
     dockerStrategy:

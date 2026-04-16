@@ -10,12 +10,14 @@
 -include .env
 export
 
-PYTHON ?= python
+PYTHON     ?= python
 SPARK_SUBMIT ?= spark-submit
-KUBECTL ?= kubectl
-NAMESPACE ?= smartshop
-REGISTRY ?= quay.io/abdhumal
+KUBECTL    ?= oc
+NAMESPACE  ?= smartshop
+REGISTRY   ?= quay.io/abdhumal
 INTERNAL_REGISTRY ?= default-route-openshift-image-registry.apps.oai-kft-ibm.ibm.rh-ods.com
+GIT_REPO   ?= https://github.com/abhijeet-dhumal/prod-ml-demo.git
+GIT_BRANCH ?= main
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -97,7 +99,7 @@ train-rec: ## Train recommendation model (DDP)
 		--batch-size 1024
 
 train-rec-k8s: ## Submit rec model TrainJob to K8s
-	envsubst < infrastructure/openshift/trainjobs.yaml | $(KUBECTL) apply -f - -n $(NAMESPACE)
+	envsubst < infrastructure/openshift/trainjobs.yaml | $(KUBECTL) apply -f -
 
 train-llm: ## Fine-tune Mistral-7B with QLoRA (local, sample)
 	$(PYTHON) training/llm/finetune.py \
@@ -125,7 +127,7 @@ serve-rag: ## Start RAG Q&A server
 	uvicorn serving.rag.server:app --host 0.0.0.0 --port 8002
 
 serve-k8s: ## Deploy KServe InferenceServices
-	$(KUBECTL) apply -f infrastructure/openshift/inferenceservices.yaml -n $(NAMESPACE)
+	envsubst < infrastructure/openshift/inferenceservices.yaml | $(KUBECTL) apply -f -
 
 # ============================================================================
 # Demo
@@ -139,8 +141,8 @@ demo: ## Launch Gradio demo UI
 # ============================================================================
 
 setup-builds: ## Create ImageStreams and BuildConfigs on the cluster
-	$(KUBECTL) apply -f infrastructure/openshift/imagestreams.yaml
-	$(KUBECTL) apply -f infrastructure/openshift/buildconfigs.yaml
+	envsubst < infrastructure/openshift/imagestreams.yaml  | $(KUBECTL) apply -f -
+	envsubst < infrastructure/openshift/buildconfigs.yaml  | $(KUBECTL) apply -f -
 
 build-images: ## Trigger all image builds on the cluster (requires setup-builds first)
 	$(KUBECTL) start-build spark-jobs   -n $(NAMESPACE) --follow
