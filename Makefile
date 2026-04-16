@@ -178,6 +178,9 @@ setup-secrets: ## Create/update all Kubernetes secrets from .env values
 	  --from-literal=MINIO_ROOT_USER=$(MINIO_ACCESS_KEY) \
 	  --from-literal=MINIO_ROOT_PASSWORD=$(MINIO_SECRET_KEY) \
 	  -n smartshop --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	$(KUBECTL) create secret generic hf-credentials \
+	  --from-literal=HF_TOKEN=$(HF_TOKEN) \
+	  -n smartshop --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	@echo "==> Secrets synced."
 
 deploy: setup-secrets ## Deploy all infrastructure to OpenShift (see docs/SETUP.md for full guide)
