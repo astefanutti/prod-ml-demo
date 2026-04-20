@@ -842,20 +842,67 @@ oc get route mlflow -n redhat-ods-applications -o jsonpath='{.spec.host}'
 
 ---
 
-## 10. Run Spark ETL (Feature Engineering)
+## 10. Container Images ✅
 
-> **Prerequisite:** Build and push `quay.io/smartshop/spark-jobs:latest` before this step.
-> The SparkApplication manifest uses a custom image containing the feature engineering script.
-> *(Custom image build is a pending task — placeholder step.)*
+All images are built via OpenShift `BuildConfig` and pushed directly to `quay.io/abdhumal` using the `quay-push-secret` in the `smartshop` namespace.
+
+| Image | quay.io path | Built from |
+|---|---|---|
+| `smartshop-spark-jobs` | `quay.io/abdhumal/smartshop-spark-jobs:latest` | `build/Containerfile.spark` — UBI9/Python 3.12, PySpark + Feast |
+| `smartshop-spark-jobs-rapids` | `quay.io/abdhumal/smartshop-spark-jobs-rapids:latest` | `build/Containerfile.spark-rapids` — `apache/spark:3.5.3` + RAPIDS 26.02.2 JAR (cuda12) |
+| `smartshop-rec-trainer` | `quay.io/abdhumal/smartshop-rec-trainer:latest` | `build/Containerfile.rec-trainer` — UBI9/Python 3.12, PyTorch DDP |
+| `smartshop-llm-trainer` | `quay.io/abdhumal/smartshop-llm-trainer:latest` | `build/Containerfile.llm-trainer` — UBI9/Python 3.12, FSDP + QLoRA |
+| `smartshop-rec-server` | `quay.io/abdhumal/smartshop-rec-server:latest` | `build/Containerfile.serving` — UBI9/Python 3.12, FastAPI |
+
+**Rebuild any image:**
+```bash
+# Create push secret once (credentials from ~/.config/containers/auth.json)
+make setup-push-secret QUAY_USER=abdhumal QUAY_TOKEN=<token>
+
+# Apply/update BuildConfigs
+make setup-builds
+
+# Rebuild all
+make build-images
+
+# Rebuild one
+make build-spark        # or build-rec / build-llm / build-serving / build-spark-rapids
+```
+
+**`.env` image variables** (update these to use quay.io paths so manifests resolve outside the cluster):
+```ini
+SPARK_JOBS_IMAGE=quay.io/abdhumal/smartshop-spark-jobs:latest
+SPARK_RAPIDS_IMAGE=quay.io/abdhumal/smartshop-spark-jobs-rapids:latest
+REC_TRAINER_IMAGE=quay.io/abdhumal/smartshop-rec-trainer:latest
+LLM_TRAINER_IMAGE=quay.io/abdhumal/smartshop-llm-trainer:latest
+REC_SERVER_IMAGE=quay.io/abdhumal/smartshop-rec-server:latest
+```
+
+---
+
+## 11. Run Spark ETL (Feature Engineering)
+
+> **Prerequisite:** Data must be uploaded to `s3://smartshop-raw/raw/` before submitting.
+> See data download step below. Images are already built ✅.
 
 ```bash
-oc apply -f infrastructure/openshift/spark-application.yaml
+# Download dataset (49GB full, or ~2.5GB sample for dev)
+make data-full      # full: ~571M reviews
+# make data-sample  # 5% subset for local testing
+
+# Upload to MinIO
+source .env
+aws s3 sync data/raw/ s3://smartshop-raw/raw/ \
+  --endpoint-url $MINIO_ENDPOINT_EXTERNAL --no-verify-ssl
+
+# Submit Spark feature engineering + text preprocessing + embeddings
+envsubst < infrastructure/openshift/spark-application.yaml | oc apply -f -
 ```
 
 Or for the GPU-accelerated path (requires RAPIDS-capable GPU nodes):
 
 ```bash
-oc apply -f infrastructure/openshift/spark-application-rapids.yaml
+envsubst < infrastructure/openshift/spark-application-rapids.yaml | oc apply -f -
 ```
 
 **Monitor:**
@@ -890,13 +937,10 @@ oc exec -n smartshop $FEAST_POD -c offline -- \
 
 ---
 
-## 11. Run PyTorch Training Jobs
+## 12. Run PyTorch Training Jobs
 
-> **Prerequisite:** Build and push trainer images before submitting jobs:
-> - `quay.io/smartshop/rec-trainer:latest` — two-tower recommendation model
-> - `quay.io/smartshop/llm-trainer:latest` — Mistral-7B QLoRA fine-tuning
->
-> *(Custom image builds are pending tasks — placeholder steps.)*
+> **Prerequisite:** Feast must be materialized (step 11d) before training reads online features.
+> All trainer images are already built and pushed to quay.io ✅.
 
 ### 11a — Recommendation Model (DDP, 4 GPUs, 1 node)
 
@@ -942,13 +986,10 @@ oc patch nodesets.slinky.slurm.net slinky -n slurm \
 
 ---
 
-## 12. Deploy Inference Services
+## 13. Deploy Inference Services
 
-> **Prerequisite:** Trained models must be available at `s3://smartshop-models/` and
-> custom serving images must be built:
-> - `quay.io/smartshop/rec-server:latest` — recommendation endpoint
->
-> *(Serving image builds are pending tasks — placeholder step.)*
+> **Prerequisite:** Trained models must be available at `s3://smartshop-models/` (step 12).
+> Serving image `quay.io/abdhumal/smartshop-rec-server:latest` is already built ✅.
 
 ```bash
 oc apply -f infrastructure/openshift/inferenceservices.yaml
@@ -1011,12 +1052,13 @@ oc get inferenceservice -n smartshop -w
 | Milvus + Attu | **Done ✅** | Standalone mode, NFS-backed, S3 backend for segments |
 | Feast Feature Store | **Done ✅** | `feast apply` ran, 3 feature views registered, visible in RHOAI dashboard |
 | MLflow | **Done ✅** | PostgreSQL backend (ClusterIP workaround for OVN-K), MinIO S3 artifacts, dashboard accessible |
-| Slurm (Slinky) | **Done ✅** | Operator installed, cluster deployed, 2 worker nodes, `sinfo` shows idle |
+| Slurm (Slinky) | **Done ✅** | Operator installed, cluster deployed, controller + login + restapi running |
 | Spark Operator | **Done ✅** | Enabled via DSC `managementState: Managed`, RBAC applied to `smartshop` |
-| Amazon Reviews dataset download | **Pending** | Run `make data-full` (49GB), upload to `smartshop-raw/raw/` |
-| Spark ETL job | **Pending** | Needs `quay.io/smartshop/spark-jobs:latest` custom image built first |
-| Feast materialize | **Pending** | Runs after Spark ETL populates `smartshop-features/` |
-| Recommendation model training | **Pending** | Needs `quay.io/smartshop/rec-trainer:latest` image |
-| LLM fine-tuning | **Pending** | Needs `quay.io/smartshop/llm-trainer:latest` image |
-| KServe InferenceServices | **Pending** | Needs trained models + serving images (`rec-server`, `llm-server`, `rag-server`) |
-| Gradio demo UI | **Pending** | `demo/app.py` exists — needs `RECOMMEND_URL`, `SUMMARIZE_URL`, `RAG_URL` env vars set to cluster endpoints |
+| Container images | **Done ✅** | All 5 images built via OpenShift BuildConfig and pushed to `quay.io/abdhumal` |
+| Amazon Reviews dataset download | **Next ▶️** | Run `make data-full` (49GB), upload to `s3://smartshop-raw/raw/` |
+| Spark ETL job | **Pending** | Blocked on data upload. Run `envsubst < infrastructure/openshift/spark-application.yaml \| oc apply -f -` |
+| Feast materialize | **Pending** | Blocked on Spark ETL. Pushes features from MinIO → Redis + Milvus |
+| Recommendation model training | **Pending** | Blocked on Feast materialize. `make train-rec-k8s` — 1 node × 4 GPUs DDP |
+| LLM fine-tuning | **Pending** | Blocked on Feast materialize. Slurm FSDP job — 2 nodes × 4 GPUs |
+| KServe InferenceServices | **Pending** | Blocked on trained models. `make serve-k8s` |
+| Gradio demo UI | **Pending** | `demo/app.py` exists — needs `RECOMMEND_URL`, `SUMMARIZE_URL`, `RAG_URL` env vars pointing to KServe routes |
