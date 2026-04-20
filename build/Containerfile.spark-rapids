@@ -16,10 +16,11 @@ ENV UV_CACHE_DIR=/tmp/uv-cache
 
 WORKDIR /opt/spark/work-dir
 
-COPY build/requirements/spark.txt requirements.txt
+COPY build/requirements/spark-rapids.txt requirements.txt
 COPY spark/ .
 
-RUN uv pip install --python python3 --no-cache -r requirements.txt
+# --system: no venv in the base image; --python python3 = 3.8 (pre-installed on focal)
+RUN uv pip install --python python3 --system --no-cache -r requirements.txt
 
 # RAPIDS plugin JAR — placed in /opt/spark/jars/ so Spark auto-loads it (no extraClassPath needed).
 # cuda12 variant for A100/H100 (CUDA 12.x). Swap for -cuda13 if cluster uses CUDA 13.
