@@ -5,25 +5,24 @@ Defines three feature views:
   2. item_features - Per-item aggregates from reviews + metadata
   3. review_embeddings - Vector embeddings for RAG similarity search
 
-Data sources live in MinIO (S3-compatible). Set FEAST_S3_ENDPOINT_URL or
-AWS_ENDPOINT_URL_S3=http://minio.smartshop.svc.cluster.local:9000 in the
-serving environment (the Feast operator injects this via envFrom).
+Data sources use SparkSource (s3a://) — requires SparkOfflineStore in feature_store.yaml.
+Spark reads from MinIO via the hadoop-aws S3A connector; S3A endpoint + credentials are
+injected by the Feast operator from feast-spark-config secret.
+
+In-cluster config: feast-operator.yaml sets offline_store.type=spark with
+  spark.hadoop.fs.s3a.endpoint = http://minio.smartshop.svc.cluster.local:9000
+Local dev: override SPARK_MASTER + S3A env vars (see feast/feature_repo/feature_store.yaml).
+
+Ref: https://github.com/ntkathole/feast/blob/prod_deploy/docs/how-to-guides/production-deployment-topologies.md
+     On-Prem/OpenShift section: Spark + MinIO is the recommended offline store
 """
 
 from datetime import timedelta
 
-import os
-
-from feast import Entity, FeatureView, Field, FileSource
+from feast import Entity, FeatureView, Field
+from feast.infra.offline_stores.contrib.spark_offline_store.spark_source import SparkSource
 from feast.types import Array, Float32, Float64, Int64, String
 from feast.value_type import ValueType
-
-# PyArrow S3FileSystem ignores AWS_ENDPOINT_URL_S3 when endpoint_override is not
-# passed explicitly. Always read the endpoint from the environment so that both
-# local dev (external URL) and in-cluster (internal svc URL) work transparently.
-_S3_ENDPOINT = os.environ.get(
-    "AWS_ENDPOINT_URL_S3", "http://minio.smartshop.svc.cluster.local:9000"
-)
 
 # -- Entities --
 
@@ -45,26 +44,30 @@ review = Entity(
     description="Unique review identifier for embedding lookup",
 )
 
-# -- Data Sources (MinIO / S3) --
-# Paths are populated by the Spark ETL job (infrastructure/openshift/spark-application-rapids.yaml).
-# `feast apply` registers the schema even before data exists; `feast materialize` reads the data.
+# -- Data Sources (MinIO / S3A via Spark) --
+# Paths are written by the Spark ETL job (spark-application-rapids.yaml).
+# s3a:// scheme is required by hadoop-aws; s3:// (boto3) won't work with SparkOfflineStore.
+# `feast apply` registers schema even before data exists; `feast materialize` triggers Spark jobs.
 
-user_features_source = FileSource(
-    path="s3://smartshop-features/user_features/",
+user_features_source = SparkSource(
+    name="user_features_source",
+    path="s3a://smartshop-features/user_features/",
+    file_format="parquet",
     timestamp_field="event_timestamp",
-    s3_endpoint_override=_S3_ENDPOINT,
 )
 
-item_features_source = FileSource(
-    path="s3://smartshop-features/item_features/",
+item_features_source = SparkSource(
+    name="item_features_source",
+    path="s3a://smartshop-features/item_features/",
+    file_format="parquet",
     timestamp_field="event_timestamp",
-    s3_endpoint_override=_S3_ENDPOINT,
 )
 
-review_embeddings_source = FileSource(
-    path="s3://smartshop-embeddings/review_embeddings/",
+review_embeddings_source = SparkSource(
+    name="review_embeddings_source",
+    path="s3a://smartshop-embeddings/review_embeddings/",
+    file_format="parquet",
     timestamp_field="event_timestamp",
-    s3_endpoint_override=_S3_ENDPOINT,
 )
 
 # -- Feature Views --

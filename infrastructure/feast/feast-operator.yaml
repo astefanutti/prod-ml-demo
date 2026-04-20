@@ -1,6 +1,5 @@
 ---
-# MinIO S3 credentials injected into all Feast server pods.
-# Feast uses AWS_ENDPOINT_URL_S3 (fsspec/pyarrow) for the custom MinIO endpoint.
+# MinIO S3 credentials — injected into all Feast server pods.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -13,8 +12,7 @@ stringData:
   AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION}"
   AWS_S3_FORCE_PATH_STYLE: "true"
 ---
-# Redis online store config. The Feast operator reads the key matching the store
-# type ("redis") and merges it into the generated feature_store.yaml.
+# Redis online store config.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -25,24 +23,69 @@ stringData:
     type: redis
     connection_string: "redis.smartshop.svc.cluster.local:6379,password=${REDIS_PASSWORD}"
 ---
-# FeatureStore CR — deployed by the RHOAI Feast Operator (feast.dev/v1, Feast 0.60.0).
+# PostgreSQL registry backend.
+# Feast SQL registry requires psycopg2-binary — pre-installed in the Feast server image.
+# Using ClusterIP directly (OVN-K DNS workaround — same fix as MLflow).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-registry-postgres-secret
+  namespace: smartshop
+stringData:
+  registry: |
+    registry_type: sql
+    path: postgresql+psycopg2://${PG_USER}:${PG_PASSWORD}@${PG_CLUSTERIP}:5432/${PG_DATABASE}
+    cache_mode: thread
+    cache_ttl_seconds: 60
+---
+# Spark offline store config — distributed materialization via Spark Operator on K8s.
+# The feast-smartshop-feast SA needs RBAC to create SparkApplications (see spark-rbac.yaml).
+# spark.kubernetes.container.image must contain pyspark + feast[spark] + hadoop-aws JAR.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-spark-config
+  namespace: smartshop
+stringData:
+  offline_store: |
+    type: spark
+    spark_master: k8s://https://kubernetes.default.svc:443
+    spark_app_name: feast-materialize
+    spark_conf:
+      spark.submit.deployMode: client
+      spark.kubernetes.container.image: ${SPARK_JOBS_IMAGE}
+      spark.kubernetes.namespace: smartshop
+      spark.kubernetes.authenticate.driver.serviceAccountName: feast-smartshop-feast
+      spark.executor.instances: "4"
+      spark.executor.cores: "2"
+      spark.executor.memory: ${SPARK_EXECUTOR_MEMORY}
+      spark.driver.memory: ${SPARK_DRIVER_MEMORY}
+      spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+      spark.hadoop.fs.s3a.access.key: "${MINIO_ACCESS_KEY}"
+      spark.hadoop.fs.s3a.secret.key: "${MINIO_SECRET_KEY}"
+      spark.hadoop.fs.s3a.path.style.access: "true"
+      spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      spark.hadoop.fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+---
+# FeatureStore CR — Standard Production topology (per production-deployment-topologies.md).
 #
-# Registry   : NFS shared PVC  → /feast-data/feast/registry.db
-# Offline    : dask (file/parquet) reading s3://smartshop-features/ from MinIO
-# Online     : Redis (password auth via feast-redis-secret)
-# Project src: GitHub repo, feast/feature_repo/ sub-directory
+# Registry  : SQL (PostgreSQL) — concurrent-writer safe, required for Spark materialization
+# Offline   : Spark — distributed processing via Spark Operator on K8s (571M reviews)
+# Online    : Redis (password auth)
+# Sources   : SparkSource (s3a://) in features.py
+#
+# Ref: https://feast.dev/blog/scaling-feast-feature-server/
+#      https://github.com/ntkathole/feast/blob/prod_deploy/docs/how-to-guides/production-deployment-topologies.md
 apiVersion: feast.dev/v1
 kind: FeatureStore
 metadata:
   name: smartshop-feast
   namespace: smartshop
   labels:
-    feature-store-ui: enabled    # required: surfaces this FeatureStore in the RHOAI dashboard
+    feature-store-ui: enabled
 spec:
   feastProject: smartshop
 
-  # Clone our public repo; featureRepoPath points to feast/feature_repo/
-  # which contains features.py with S3-based FileSources.
   feastProjectDir:
     git:
       url: https://github.com/abhijeet-dhumal/prod-ml-demo.git
@@ -50,14 +93,21 @@ spec:
       featureRepoPath: feast/feature_repo
 
   services:
-    # ---- Offline store ----
-    # dask type — reads Parquet from S3 (MinIO) in-memory; no local PVC needed.
-    # S3 credentials injected so fsspec/pyarrow can reach MinIO.
+    # ---- Offline store (Spark) ----
+    # SparkOfflineStore distributes materialization across Spark executor pods.
+    # Required for 571M-row Amazon Reviews dataset — dask would OOM a single pod.
+    # Spark config injected from feast-spark-config secret.
+    #
+    # Image override: feastdev/feature-server doesn't ship pyspark.
+    # We use our custom spark-jobs image which has pyspark + feast + hadoop-aws JAR.
     offlineStore:
       persistence:
-        file:
-          type: dask
+        store:
+          type: spark
+          secretRef:
+            name: feast-spark-config
       server:
+        image: ${SPARK_JOBS_IMAGE}
         envFrom:
           - secretRef:
               name: feast-s3-credentials
@@ -74,27 +124,22 @@ spec:
           - secretRef:
               name: feast-s3-credentials
 
-    # ---- Registry ----
-    # Dedicated 1Gi NFS PVC — avoids double-mounting smartshop-shared-storage
-    # in the same pod (NFS CSI can't remount the same PV twice per pod).
+    # ---- Registry (SQL / PostgreSQL) ----
+    # SQL registry is required for concurrent writes (Spark materialization
+    # runs multiple workers writing to the registry simultaneously).
+    # File-based registry.db is incompatible with multi-replica/concurrent-write scenarios.
     registry:
       local:
         persistence:
-          file:
-            path: registry.db
-            pvc:
-              create:
-                accessModes: [ReadWriteOnce]
-                storageClassName: nfs-csi
-                resources:
-                  requests:
-                    storage: 1Gi
-              mountPath: /feast-registry
+          store:
+            type: sql
+            secretRef:
+              name: feast-registry-postgres-secret
         server:
           restAPI: true
           envFrom:
             - secretRef:
                 name: feast-s3-credentials
 
-    # ---- UI (optional, useful for Summit demo) ----
+    # ---- UI ----
     ui: {}

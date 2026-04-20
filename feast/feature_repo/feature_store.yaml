@@ -1,19 +1,41 @@
-# Local development config — the Feast operator CR overrides these backends in-cluster.
-# For local `feast apply`, set:
-#   export AWS_ENDPOINT_URL_S3=https://minio-s3-smartshop.apps.<cluster-domain>
-#   export AWS_ACCESS_KEY_ID=<your-minio-access-key>
-#   export AWS_SECRET_ACCESS_KEY=<your-minio-secret-key>
+# Local development config.
+# In-cluster, the Feast operator CR (feast-operator.yaml) overrides these backends entirely.
+#
+# For local `feast apply` / `feast materialize` against the dev cluster:
+#   export SPARK_MASTER=k8s://https://<cluster-api-url>:6443   (or local[*] for local Spark)
+#   export MINIO_ACCESS_KEY=<key>
+#   export MINIO_SECRET_KEY=<secret>
+#   export MINIO_ENDPOINT=https://minio-s3-smartshop.apps.<cluster-domain>
 #   export REDIS_HOST=<port-forward-host>
 #   export REDIS_PORT=6379
-#   export REDIS_PASSWORD=<your-redis-password>
+#   export REDIS_PASSWORD=<password>
+#   export PG_USER=<user>  PG_PASSWORD=<password>  PG_HOST=localhost  PG_DATABASE=mlflow
 project: smartshop
 provider: local
+
+# SQL registry — matches in-cluster FeatureStore CR (file registry.db blocks concurrent writes).
 registry:
-  registry_type: file
-  path: data/registry.db
+  registry_type: sql
+  path: "postgresql+psycopg2://${PG_USER}:${PG_PASSWORD}@${PG_HOST:-localhost}:5432/${PG_DATABASE:-mlflow}"
+  cache_mode: thread
+  cache_ttl_seconds: 60
+
+# SparkOfflineStore — matches in-cluster FeatureStore CR.
+# For local[*] (single-machine) testing, set SPARK_MASTER=local[*].
+offline_store:
+  type: spark
+  spark_master: "${SPARK_MASTER:-local[*]}"
+  spark_app_name: feast-local
+  spark_conf:
+    spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT:-http://localhost:9000}"
+    spark.hadoop.fs.s3a.access.key: "${MINIO_ACCESS_KEY}"
+    spark.hadoop.fs.s3a.secret.key: "${MINIO_SECRET_KEY}"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+
 online_store:
   type: redis
-  connection_string: "${REDIS_HOST}:${REDIS_PORT},password=${REDIS_PASSWORD}"
-offline_store:
-  type: file
+  connection_string: "${REDIS_HOST:-localhost}:${REDIS_PORT:-6379},password=${REDIS_PASSWORD}"
+
 entity_key_serialization_version: 3
