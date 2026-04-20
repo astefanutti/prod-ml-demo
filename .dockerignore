@@ -18,7 +18,8 @@ logs/
 **/.pytest_cache/
 **/*.egg-info/
 dist/
-build/
+# build/ contains Containerfiles and requirements — must be included in context
+!build/
 .venv/
 venv/
 

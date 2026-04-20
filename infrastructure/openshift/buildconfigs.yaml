@@ -1,6 +1,7 @@
 ---
 # BuildConfig — spark-jobs
 # Trigger: oc start-build spark-jobs -n ${NAMESPACE}
+# Output: pushed directly to ${REGISTRY}/smartshop-spark-jobs:latest via ${QUAY_PUSH_SECRET}
 apiVersion: build.openshift.io/v1
 kind: BuildConfig
 metadata:
@@ -22,8 +23,10 @@ spec:
           value: /tmp/uv-cache
   output:
     to:
-      kind: ImageStreamTag
-      name: spark-jobs:latest
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-spark-jobs:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
   resources:
     limits:
       cpu: "4"
@@ -51,8 +54,10 @@ spec:
       noCache: false
   output:
     to:
-      kind: ImageStreamTag
-      name: rec-trainer:latest
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-rec-trainer:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
   resources:
     limits:
       cpu: "4"
@@ -80,12 +85,50 @@ spec:
       noCache: false
   output:
     to:
-      kind: ImageStreamTag
-      name: llm-trainer:latest
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-llm-trainer:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
   resources:
     limits:
       cpu: "4"
       memory: "12Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — spark-jobs-rapids (RAPIDS JAR injection variant)
+# Note: ADD instruction fetches the JAR from Maven Central at build time (~850 MiB).
+# Trigger: oc start-build spark-jobs-rapids -n ${NAMESPACE}
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: spark-jobs-rapids
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.spark-rapids
+      noCache: false
+      env:
+        - name: UV_CACHE_DIR
+          value: /tmp/uv-cache
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-spark-jobs-rapids:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
   successfulBuildsHistoryLimit: 2
   failedBuildsHistoryLimit: 2
 
@@ -109,8 +152,10 @@ spec:
       noCache: false
   output:
     to:
-      kind: ImageStreamTag
-      name: rec-server:latest
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-rec-server:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
   resources:
     limits:
       cpu: "4"

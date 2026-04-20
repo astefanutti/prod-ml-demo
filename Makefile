@@ -8,7 +8,7 @@
        demo \
        setup-builds build-images build-spark build-rec build-llm build-serving \
        build-spark-rapids build-status push-images \
-       setup-secrets deploy clean
+       setup-push-secret setup-secrets deploy clean
 
 # Load .env if present — exports all vars so envsubst and shell commands pick them up.
 # Skipped when .env doesn't exist (CI or first-run before setup).
@@ -172,12 +172,16 @@ build-llm:       ## Build only llm-trainer image
 build-serving:   ## Build only rec-server (serving) image
 	$(KUBECTL) start-build rec-server  -n $(NAMESPACE) --follow
 
+build-spark-rapids: ## Build only spark-jobs-rapids image (RAPIDS JAR; ~850 MiB download at build time)
+	$(KUBECTL) start-build spark-jobs-rapids -n $(NAMESPACE) --follow
+
 build-status:    ## Show status of all builds
 	$(KUBECTL) get builds -n $(NAMESPACE)
 
 push-images: ## Mirror all images from internal registry → quay.io/abdhumal
 	$(KUBECTL) image mirror \
 	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/spark-jobs:latest=$(REGISTRY)/smartshop-spark-jobs:latest" \
+	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/spark-jobs-rapids:latest=$(REGISTRY)/smartshop-spark-jobs-rapids:latest" \
 	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/rec-trainer:latest=$(REGISTRY)/smartshop-rec-trainer:latest" \
 	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/llm-trainer:latest=$(REGISTRY)/smartshop-llm-trainer:latest" \
 	  "$(INTERNAL_REGISTRY)/$(NAMESPACE)/rec-server:latest=$(REGISTRY)/smartshop-rec-server:latest" \
@@ -186,6 +190,17 @@ push-images: ## Mirror all images from internal registry → quay.io/abdhumal
 # ============================================================================
 # Infrastructure
 # ============================================================================
+
+setup-push-secret: ## Create quay.io push secret used by BuildConfigs (run once before setup-builds)
+	@if [ -z "$(QUAY_USER)" ] || [ -z "$(QUAY_TOKEN)" ]; then \
+	  echo "ERROR: pass QUAY_USER and QUAY_TOKEN: make setup-push-secret QUAY_USER=abdhumal QUAY_TOKEN=<robot-token>"; exit 1; \
+	fi
+	$(KUBECTL) create secret docker-registry $(QUAY_PUSH_SECRET) \
+	  --docker-server=quay.io \
+	  --docker-username=$(QUAY_USER) \
+	  --docker-password=$(QUAY_TOKEN) \
+	  -n $(NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@echo "==> $(QUAY_PUSH_SECRET) secret ready in $(NAMESPACE)"
 
 setup-secrets: ## Create/update all Kubernetes secrets from .env values
 	@if [ ! -f .env ]; then \

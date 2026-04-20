@@ -1,21 +1,39 @@
-# RAPIDS+Spark: no Red Hat registry equivalent exists for this GPU-accelerated combination.
-# Requires: podman login nvcr.io (free NGC account at https://ngc.nvidia.com)
-# Only needed for the optional RAPIDS GPU variant — CPU path uses Containerfile.spark.
-FROM nvcr.io/nvidia/spark:3.5.0-rapids24.10
+# RAPIDS GPU-accelerated Spark — JAR injection approach (no NGC account needed).
+# Base is identical to Containerfile.spark — shares all layers except the RAPIDS JAR.
+# JAR source: https://repo1.maven.org/maven2/com/nvidia/rapids-4-spark_2.12/
+FROM docker.io/apache/spark:3.5.3
 
 USER 0
+
+# Java + Python 3.12 + build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3.12-dev python3-pip gcc && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 ENV UV_CACHE_DIR=/tmp/uv-cache
 
 WORKDIR /opt/spark/work-dir
 
+COPY build/requirements/spark.txt requirements.txt
 COPY spark/ .
 
-RUN uv pip install --system --no-cache \
-    "feast[spark]>=0.60.0" \
-    "pandas>=2.0.0" \
-    "pyarrow>=14.0.0" \
-    "sentence-transformers==3.3.1"
+RUN uv pip install --python python3.12 --no-cache -r requirements.txt
+
+# RAPIDS plugin JAR — placed in /opt/spark/jars/ so Spark auto-loads it (no extraClassPath needed).
+# cuda12 variant for A100/H100 (CUDA 12.x). Swap for -cuda13 if cluster uses CUDA 13.
+# Upgrading RAPIDS: change the version in the URL only — no other changes needed.
+# Ref: https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/kubernetes.html
+ADD https://repo1.maven.org/maven2/com/nvidia/rapids-4-spark_2.12/26.02.2/rapids-4-spark_2.12-26.02.2-cuda12.jar \
+    /opt/spark/jars/rapids-4-spark.jar
+
+# GPU discovery script — required by spark.executor.resource.gpu.discoveryScript.
+# Apache Spark ships this script but not at the root; fetch it to a known path.
+ADD https://raw.githubusercontent.com/apache/spark/v3.5.3/examples/src/main/scripts/getGpusResources.sh \
+    /opt/spark/getGpusResources.sh
+RUN chmod +x /opt/spark/getGpusResources.sh
+
+ENV SPARK_HOME=/opt/spark
+ENV PATH=${SPARK_HOME}/bin:${PATH}
 
 USER 1001
