@@ -1,11 +1,110 @@
+# SmartShop feature_store.yaml
+#
+# This file is used in two contexts:
+#
+#   1. feast-spark-server pod (materialization):
+#        - offline_store.type: spark  →  SparkComputeEngine reads SparkSource → Redis
+#        - registry: file on PVC (/feast-registry/registry.db)
+#        - Set by: FeatureStore CR batchEngine ConfigMap + offlineStore secret
+#
+#   2. rec-trainer pod (training - get_historical_features):
+#        - offline_store.type: spark  →  SparkSession local[*] in training pod
+#        - registry: remote gRPC → feast-smartshop-feast-registry svc
+#        - Set by: FEAST_REGISTRY_TYPE=remote + FEAST_REGISTRY_PATH env vars
+#
+# Env vars used: AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+#                REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
+#                FEAST_REGISTRY_TYPE (file|remote), FEAST_REGISTRY_PATH
+#
+# For local dev: export the above from .env, then: feast apply / feast materialize-incremental
+
 project: smartshop
 provider: local
+
+# Registry: Feast's YAML loader uses os.path.expandvars() which supports ${VAR} but NOT
+# ${VAR:-default} (bash-style defaults). The pod version uses static values; this repo
+# version documents the intended env vars but requires them to be set before use.
 registry:
   registry_type: file
-  path: data/registry.db
+  path: /feast-registry/registry.db
+
+offline_store:
+  type: spark
+  spark_conf:
+    spark.master: "local[*]"
+    spark.ui.enabled: "false"
+    spark.eventLog.enabled: "false"
+    spark.sql.catalogImplementation: "hive"
+    spark.sql.session.timeZone: "UTC"
+    spark.sql.execution.arrow.pyspark.enabled: "true"
+    spark.sql.execution.arrow.fallback.enabled: "true"
+    # 200 partitions for 35M users / 9.8M items — avoids OOM on large shuffles
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
+    spark.driver.memory: "8g"
+    spark.executor.memory: "8g"
+    spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+    # Disable FIPS mode — UBI9/RHEL FIPS JVM blocks HMAC-SHA256 SecretKeySpec (AWS SDK v1 signing)
+    spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
+    # s3a MinIO access
+    # (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY from feast-s3-credentials secret)
+    spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+    spark.hadoop.fs.s3a.connection.maximum: "100"
+    spark.hadoop.fs.s3a.threads.max: "64"
+  # staging_location: write large materializations to S3 staging before Redis write
+  # auto-converts s3:// → s3a:// internally
+  staging_location: "s3://smartshop-features/feast-staging/"
+
+# batch_engine: controls how feast materialize-incremental writes to the online store.
+#
+# SparkComputeEngine passes the ENTIRE batch_engine dict (flat) to SparkConf().setAll().
+# All Spark config keys must be at the TOP LEVEL — NOT nested under spark_conf.
+# (source: compute_engines/spark/utils.py get_or_create_new_spark_session)
+#
+# spark.master: k8s://... → Feast pod acts as Spark driver, spawns executor pods on K8s.
+# This gives truly distributed materialization (not local[*] single JVM).
+# The Feast pod needs the spark serviceAccount and driver bind address configured so
+# executors can call back to the driver inside the pod.
+#
+# partitions: 200 — SparkComputeEngineConfig top-level field; controls repartitioning
+# before Redis writes. Separate from spark.sql.shuffle.partitions.
+batch_engine:
+  type: spark.engine
+  # 10 partitions → 10 concurrent Redis pipeline connections.
+  # 200 caused Redis OOMKill (512Mi default limit). Keep ≤10 unless Redis limit is raised further.
+  partitions: 10
+  # local[*]: run Spark in the feast pod JVM. Avoids executor pod CreateContainerError
+  # (feast-server image lacks /opt/spark/bin/executor required by k8s:// driver mode).
+  # Switch to k8s:// once a proper Spark executor base image is configured.
+  spark.master: "local[*]"
+  spark.driver.memory: "8g"
+  spark.ui.enabled: "false"
+  spark.eventLog.enabled: "false"
+  # SQL / Arrow settings
+  spark.sql.session.timeZone: "UTC"
+  spark.sql.shuffle.partitions: "200"
+  spark.default.parallelism: "200"
+  spark.sql.execution.arrow.pyspark.enabled: "true"
+  spark.sql.execution.arrow.fallback.enabled: "true"
+  spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+  # s3a MinIO — same credentials as SparkApplications
+  spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+  spark.hadoop.fs.s3a.path.style.access: "true"
+  spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+  spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+  spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+  spark.hadoop.fs.s3a.connection.maximum: "100"
+  spark.hadoop.fs.s3a.threads.max: "64"
+
 online_store:
   type: redis
-  connection_string: ${REDIS_HOST}:${REDIS_PORT}
-offline_store:
-  type: file
+  connection_string: "redis.smartshop.svc.cluster.local:6379,password=smartshop-redis-2026"
+
 entity_key_serialization_version: 3
+
+auth:
+  type: no_auth

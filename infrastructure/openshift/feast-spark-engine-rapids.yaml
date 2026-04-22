@@ -1,0 +1,71 @@
+---
+# feast-spark-engine-rapids ConfigMap
+#
+# Drop-in replacement for feast-spark-engine when running Feast BFV with RAPIDS GPU workers.
+# Switch from local[*] → k8s:// cluster mode with 4 GPU executor pods.
+#
+# Prerequisites before applying:
+#   1. feast-spark-executor image built and pushed:
+#        oc start-build feast-spark-executor -n ${NAMESPACE} --follow
+#   2. spark ServiceAccount exists with correct RBAC:
+#        oc create sa spark -n ${NAMESPACE}
+#        oc adm policy add-role-to-user edit -z spark -n ${NAMESPACE}
+#
+# Apply:
+#   envsubst < infrastructure/openshift/feast-spark-engine-rapids.yaml | oc apply -f -
+#   oc rollout restart deployment/feast-smartshop-feast -n ${NAMESPACE}
+#
+# Revert to local[*]:
+#   envsubst < infrastructure/openshift/feast-spark-engine.yaml | oc apply -f -
+#   oc rollout restart deployment/feast-smartshop-feast -n ${NAMESPACE}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feast-spark-engine
+  namespace: ${NAMESPACE}
+data:
+  config: |
+    type: spark.engine
+    partitions: 10
+
+    # k8s:// cluster mode — spawns 4 GPU executor pods using feast-spark-executor image
+    spark.master: "k8s://${OCP_API_URL}"
+    spark.submit.deployMode: "client"
+    spark.driver.memory: "8g"
+    spark.executor.instances: "4"
+    spark.executor.memory: "8g"
+    spark.executor.cores: "4"
+
+    # RAPIDS GPU plugin
+    spark.plugins: "com.nvidia.spark.SQLPlugin"
+    spark.rapids.sql.enabled: "true"
+    spark.rapids.sql.concurrentGpuTasks: "2"
+    spark.executor.resource.gpu.amount: "1"
+    spark.executor.resource.gpu.vendor: "nvidia.com/gpu"
+    spark.executor.resource.gpu.discoveryScript: "/opt/spark/getGpusResources.sh"
+
+    # Executor pod image — feast-spark-executor-rapids (CPU executor + RAPIDS JAR on top)
+    spark.kubernetes.container.image: "${REGISTRY}/smartshop-feast-spark-executor-rapids:latest"
+    spark.kubernetes.authenticate.driver.serviceAccountName: "spark"
+    spark.kubernetes.namespace: "${NAMESPACE}"
+
+    # Pass S3 creds and FIPS fix to executor pods
+    spark.kubernetes.driverEnv.JAVA_TOOL_OPTIONS: "-Dcom.redhat.fips=false"
+    spark.kubernetes.executorEnv.JAVA_TOOL_OPTIONS: "-Dcom.redhat.fips=false"
+
+    spark.ui.enabled: "false"
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "s3a://smartshop-features/spark-events/"
+    spark.sql.session.timeZone: "UTC"
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
+    spark.sql.execution.arrow.pyspark.enabled: "true"
+    spark.sql.execution.arrow.fallback.enabled: "true"
+    spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+    spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+    spark.hadoop.fs.s3a.connection.maximum: "100"
+    spark.hadoop.fs.s3a.threads.max: "64"

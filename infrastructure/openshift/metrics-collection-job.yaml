@@ -1,0 +1,94 @@
+---
+# metrics-collection-job.yaml — MANUAL APPLY ONLY (not wired into apply-all.sh)
+#
+# This K8s Job runs collect-run-metrics.sh on-cluster. It requires the
+# smartshop-collect-script ConfigMap (created by apply-all.sh observability phase).
+# Apply manually after a Spark/training run:
+#   envsubst < infrastructure/openshift/metrics-collection-job.yaml | oc apply -f -
+#
+# The automated path uses collect-run-metrics.sh called from wait-and-materialize.sh
+# (step 5) which runs the script locally via oc exec, not via this Job manifest.
+#
+# Original header:
+#
+# USAGE — submit immediately after the Spark/Slurm job finishes:
+#
+#   After RAPIDS run:
+#     RUN_TYPE=rapids APP_NAME=smartshop-feature-engineering-rapids \
+#       envsubst < infrastructure/openshift/metrics-collection-job.yaml | oc apply -f -
+#
+#   After CPU baseline:
+#     RUN_TYPE=cpu APP_NAME=smartshop-feature-engineering-cpu-baseline \
+#       envsubst < infrastructure/openshift/metrics-collection-job.yaml | oc apply -f -
+#
+#   After Slurm FSDP:
+#     RUN_TYPE=slurm TRAINJOB_NAME=smartshop-llm-finetune \
+#       envsubst < infrastructure/openshift/metrics-collection-job.yaml | oc apply -f -
+#
+#   Collect everything at once:
+#     RUN_TYPE=all envsubst < infrastructure/openshift/metrics-collection-job.yaml | oc apply -f -
+#
+# NOTE: The spark-jobs image ships oc CLI, python3, boto3, mlflow, and the collect script.
+#       If oc is not in spark-jobs, run via a separate oc-enabled image.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smartshop-collect-metrics-${RUN_TYPE}
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: observability
+spec:
+  ttlSecondsAfterFinished: 7200
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: spark   # needs oc get pod/log access in same namespace
+      containers:
+        - name: collector
+          image: ${SPARK_JOBS_IMAGE}
+          imagePullPolicy: Always
+          command: [bash, /opt/scripts/collect-run-metrics.sh]
+          env:
+            - name: RUN_TYPE
+              value: "${RUN_TYPE}"
+            - name: APP_NAME
+              value: "${APP_NAME:-}"
+            - name: TRAINJOB_NAME
+              value: "${TRAINJOB_NAME:-}"
+            - name: NAMESPACE
+              value: "${NAMESPACE}"
+            - name: OC_CLUSTER_DOMAIN
+              value: "${OC_CLUSTER_DOMAIN}"
+            - name: MLFLOW_TRACKING_URI
+              value: "${MLFLOW_TRACKING_URI}"
+            - name: S3_MODELS_BUCKET
+              value: "${S3_MODELS_BUCKET}"
+            - name: MINIO_ENDPOINT
+              value: "${MINIO_ENDPOINT}"
+          envFrom:
+            - secretRef:
+                name: smartshop-credentials   # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+          volumeMounts:
+            - name: collect-script
+              mountPath: /opt/scripts
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+      volumes:
+        - name: collect-script
+          configMap:
+            name: smartshop-collect-script
+            defaultMode: 0755
+
+# NOTE: smartshop-collect-script ConfigMap must exist before the Job runs.
+# Create/update it with:
+#   oc create configmap smartshop-collect-script \
+#     --from-file=collect-run-metrics.sh=scripts/collect-run-metrics.sh \
+#     -n smartshop --dry-run=client -o yaml | oc apply -f -
+# This is automated by scripts/apply-all.sh (step: observability)

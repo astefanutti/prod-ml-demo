@@ -1,0 +1,74 @@
+# feast-spark-server image
+#
+# Extends quay.io/feastdev/feature-server:0.62.0 (feast[minimal], Python 3.12, UBI9)
+# with:
+#   - Feast reinstalled from fork branch fix/bfv-both-bugs (2 upstream bug fixes):
+#       Bug 1: feature_builder.py — get_column_info() missing "python" mode guard
+#       Bug 2: spark.py — pull_all_from_table_or_query() missing SELECT * fallback
+#     PRs pending merge at https://github.com/feast-dev/feast
+#   - pyspark==3.5.3 and hadoop-aws JARs for s3a:// MinIO access
+#
+# Used by:
+#   - feast-spark-server pod  (SparkComputeEngine materialize → Redis)
+#   - rec-trainer pod         (SparkOfflineStore get_historical_features → training)
+#
+# PySpark version pinned to 3.5.3 (Spark 3.5.3 / Hadoop 3.3.4):
+#   - Hadoop 3.3.4 uses AWS SDK v1 (com.amazonaws) → compatible with aws-java-sdk-bundle below
+#   - PySpark 4.0.0 bundles hadoop-aws-3.4.0 which requires AWS SDK v2 (software.amazon.awssdk)
+#     but does NOT bundle the v2 SDK — causing NoClassDefFoundError on s3a:// access
+#
+# Java 11 is required by PySpark 3.5.3 / Spark 3.5.3 to launch the JVM (SparkContext).
+#
+# Hadoop-AWS JARs: must match PySpark 3.5.3's bundled Spark 3.5.3 / Hadoop 3.3.4.
+#   hadoop-aws-3.3.4.jar + aws-java-sdk-bundle-1.12.367.jar
+
+FROM quay.io/feastdev/feature-server:0.62.0
+
+USER 0
+
+# Install git so pip can clone the feast fork (needed for git+ install below).
+# Java 11 is required by PySpark 3.5.3 / Spark 3.5 to launch the JVM (SparkContext).
+RUN microdnf install -y java-11-openjdk-headless && microdnf clean all
+ENV JAVA_HOME=/usr/lib/jvm/jre-11
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+# JAVA_TOOL_OPTIONS is the standard JVM env var read by ALL JVM processes at startup
+# (including PySpark's internal Py4J gateway). JAVA_OPTS is NOT read by PySpark's JVM
+# launcher — only shell scripts that explicitly pass $JAVA_OPTS use it.
+# Disabling FIPS here is required: UBI9 FIPS JVM blocks HMAC-SHA256 SecretKeySpec
+# (AWS SDK v1 request signing). Must be set before JVM starts, not via SparkConf.
+ENV JAVA_TOOL_OPTIONS="-Dcom.redhat.fips=false"
+
+# Patch only the two files containing BFV bug fixes.
+# This avoids reinstalling feast (which would replace the feast CLI entry point)
+# while still getting the fixed code into the installed site-packages.
+#   Bug 1: feature_builder.py — get_column_info() missing "python" mode guard
+#   Bug 2: spark.py — pull_all_from_table_or_query() missing SELECT * fallback
+# PRs pending merge at https://github.com/feast-dev/feast — remove this block once merged.
+RUN FEAST_SITE=$(python3 -c 'import feast, os; print(os.path.dirname(feast.__file__))') && \
+    echo "Patching feast in ${FEAST_SITE}" && \
+    FORK="https://raw.githubusercontent.com/abhijeet-dhumal/feast/fix/bfv-both-bugs/sdk/python" && \
+    curl -fsSL -o "${FEAST_SITE}/infra/compute_engines/feature_builder.py" \
+      "${FORK}/feast/infra/compute_engines/feature_builder.py" && \
+    curl -fsSL -o "${FEAST_SITE}/infra/offline_stores/contrib/spark_offline_store/spark.py" \
+      "${FORK}/feast/infra/offline_stores/contrib/spark_offline_store/spark.py" && \
+    echo "Patch applied OK"
+
+# Install pyspark — pinned to 3.5.3 to match Hadoop 3.3.4 (AWS SDK v1 compatible)
+RUN pip install --no-cache-dir pyspark==3.5.3
+
+# Locate pyspark jars directory dynamically — works regardless of Python site-packages path.
+# Add hadoop-aws-3.3.4 (matches Hadoop 3.3.4 bundled in Spark 3.5.3) and aws-java-sdk-bundle
+# for s3a:// MinIO access using EnvironmentVariableCredentialsProvider (SDK v1).
+RUN SPARK_JARS=$(python3 -c 'import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), "jars"))') && \
+    echo "Installing hadoop-aws JARs into ${SPARK_JARS}" && \
+    curl -fsSL -o "${SPARK_JARS}/hadoop-aws-3.3.4.jar" \
+      https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    curl -fsSL -o "${SPARK_JARS}/aws-java-sdk-bundle-1.12.367.jar" \
+      https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.367/aws-java-sdk-bundle-1.12.367.jar && \
+    echo "JAR sizes:" && ls -lh "${SPARK_JARS}/hadoop-aws-3.3.4.jar" "${SPARK_JARS}/aws-java-sdk-bundle-1.12.367.jar"
+
+# Allow non-root user (1001) to write Spark temp dirs
+RUN mkdir -p /tmp/spark-events /tmp/spark-warehouse && \
+    chmod -R g+w /tmp/spark-events /tmp/spark-warehouse
+
+USER 1001

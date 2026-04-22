@@ -1,0 +1,47 @@
+# RBAC for Feast's ServiceAccount (auto-created by the operator as `feast-smartshop-feast`)
+# to submit and monitor SparkApplication CRs for distributed materialization.
+#
+# The Feast SparkOfflineStore (offline_store.type=spark with k8s:// master) calls
+# spark-submit which creates SparkApplication resources via the Spark Operator.
+# Without this, feast materialize fails with "403 Forbidden" creating SparkApplications.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: feast-spark-submitter
+  namespace: smartshop
+rules:
+  # SparkApplication CRDs (Spark Operator)
+  - apiGroups: ["sparkoperator.k8s.io"]
+    resources: ["sparkapplications"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch"]
+  # Driver/executor pods — Spark on K8s creates these directly
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  # ConfigMaps for Spark driver/executor conf
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # Services for driver → executor communication
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: feast-spark-submitter
+  namespace: smartshop
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: feast-spark-submitter
+subjects:
+  # The Feast operator names the SA: feast-<featurestore-name>-feast
+  - kind: ServiceAccount
+    name: feast-smartshop-feast
+    namespace: smartshop

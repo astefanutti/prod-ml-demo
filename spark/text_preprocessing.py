@@ -15,10 +15,23 @@ Usage:
 
 import argparse
 import json
+import time
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
+
+try:
+    from spark.utils.mlflow_metrics import SparkRunLogger
+except ImportError:
+    SparkRunLogger = None
+
+
+def _log_metric(key, value, unit=""):
+    tag = f"[METRIC] {key}={value}"
+    if unit:
+        tag += f" {unit}"
+    print(tag)
 
 
 def create_spark_session(app_name: str = "SmartShop-TextPreprocessing") -> SparkSession:
@@ -35,17 +48,19 @@ def build_summarization_prompt(title, text, rating):
     """Build an instruction-tuning example for review summarization."""
     if not text or len(str(text)) < 50:
         return None
-
-    sentiment = "positive" if int(rating) >= 4 else "negative" if int(rating) <= 2 else "neutral"
-
+    try:
+        r = int(float(rating)) if rating is not None else 3
+    except (ValueError, TypeError):
+        r = 3
+    sentiment = "positive" if r >= 4 else "negative" if r <= 2 else "neutral"
     example = {
         "instruction": (
             "Summarize the following product review in 1-2 sentences. "
             "Include the overall sentiment (positive/negative/neutral)."
         ),
-        "input": f"Product: {title}\nReview: {text}",
-        "output": "",  # Will be filled by the model during training
-        "metadata": {"rating": int(rating), "sentiment": sentiment},
+        "input": f"Product: {title or 'Unknown'}\nReview: {text}",
+        "output": "",
+        "metadata": {"rating": r, "sentiment": sentiment},
     }
     return json.dumps(example)
 
@@ -55,15 +70,18 @@ def build_qa_prompt(title, text, rating):
     """Build an instruction-tuning example for product Q&A."""
     if not text or len(str(text)) < 100:
         return None
-
+    try:
+        r = int(float(rating)) if rating is not None else 3
+    except (ValueError, TypeError):
+        r = 3
     example = {
         "instruction": (
             "Based on the following product review, answer questions about the product. "
             "Be helpful, accurate, and concise."
         ),
-        "input": f"Product: {title}\nReview ({rating}/5 stars): {text}",
+        "input": f"Product: {title or 'Unknown'}\nReview ({r}/5 stars): {text}",
         "output": "",
-        "metadata": {"rating": int(rating)},
+        "metadata": {"rating": r},
     }
     return json.dumps(example)
 
@@ -103,20 +121,48 @@ def main():
     )
     args = parser.parse_args()
 
+    job_start = time.time()
     spark = create_spark_session()
 
+    mlflow_logger = SparkRunLogger(spark, experiment="smartshop-text-preprocessing") if SparkRunLogger else None
+    _run_ctx = mlflow_logger.start_run(run_name="text-preprocessing") if mlflow_logger else None
+    if _run_ctx:
+        _run_ctx.__enter__()
+
+    def _metric(key, value, unit=""):
+        _log_metric(key, value, unit)
+        if mlflow_logger:
+            mlflow_logger.log_metric(key, value)
+
     print(f"Reading reviews from {args.input}")
-    df = spark.read.parquet(args.input)
+    t = time.time()
+    input_paths = [p.strip() for p in args.input.split(",") if p.strip()]
+    df = spark.read.parquet(*input_paths)
 
     # Normalize columns
     if "asin" in df.columns and "parent_asin" not in df.columns:
         df = df.withColumnRenamed("asin", "parent_asin")
+
+    # Guard: ensure text and rating columns exist
+    if "text" not in df.columns:
+        df = df.withColumn("text", F.lit(""))
+    if "rating" not in df.columns:
+        df = df.withColumn("rating", F.lit(3))
+    if "title" not in df.columns:
+        df = df.withColumn("title", F.lit("Unknown Product"))
+
+    total_input = df.count()
+    _metric("read_elapsed_s", round(time.time() - t, 2), "s")
+    _metric("total_input_reviews", total_input)
 
     print("Cleaning and deduplicating...")
     df = clean_reviews(df)
 
     if args.max_examples:
         df = df.limit(args.max_examples)
+
+    clean_count = df.count()
+    _metric("clean_reviews", clean_count)
 
     # Build instruction-tuning examples
     print("Building summarization prompts...")
@@ -149,16 +195,45 @@ def main():
 
     # Write JSONL
     print("Writing train/val/test splits...")
-    train_df.write.text(f"{args.output}/train", mode="overwrite")
-    val_df.write.text(f"{args.output}/val", mode="overwrite")
-    test_df.write.text(f"{args.output}/test", mode="overwrite")
+    t = time.time()
+    train_df.write.mode("overwrite").text(f"{args.output}/train")
+    val_df.write.mode("overwrite").text(f"{args.output}/val")
+    test_df.write.mode("overwrite").text(f"{args.output}/test")
 
-    print(f"  Train: {train_df.count():,} examples")
-    print(f"  Val:   {val_df.count():,} examples")
-    print(f"  Test:  {test_df.count():,} examples")
+    n_train = train_df.count()
+    n_val = val_df.count()
+    n_test = test_df.count()
+    n_total = n_train + n_val + n_test
+    write_elapsed = time.time() - t
+    job_elapsed = time.time() - job_start
 
+    _metric("train_examples", n_train)
+    _metric("val_examples", n_val)
+    _metric("test_examples", n_test)
+    _metric("total_examples", n_total)
+    _metric("write_elapsed_s", round(write_elapsed, 2), "s")
+    _metric("total_elapsed_s", round(job_elapsed, 2), "s")
+    _metric("throughput_rows_per_s", int(total_input / job_elapsed) if job_elapsed > 0 else 0, "rows/s")
+
+    print(f"  Train: {n_train:,} examples")
+    print(f"  Val:   {n_val:,} examples")
+    print(f"  Test:  {n_test:,} examples")
+
+    if mlflow_logger:
+        mlflow_logger.finalize(output_path="/tmp/text_preprocessing_metrics.json")
+    if _run_ctx:
+        _run_ctx.__exit__(None, None, None)
+
+    print(
+        f"\n{'='*60}\n"
+        f"Text preprocessing complete.\n"
+        f"  Input reviews : {total_input:,}\n"
+        f"  Clean reviews : {clean_count:,}\n"
+        f"  Total examples: {n_total:,} (train/val/test)\n"
+        f"  Elapsed       : {job_elapsed:.1f}s\n"
+        f"{'='*60}"
+    )
     spark.stop()
-    print("Text preprocessing complete.")
 
 
 if __name__ == "__main__":

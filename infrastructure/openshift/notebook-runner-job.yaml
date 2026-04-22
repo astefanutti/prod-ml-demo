@@ -1,0 +1,155 @@
+---
+# Notebook Runner Job — executes metrics_analysis.ipynb in-cluster via papermill.
+#
+# WHY IN-CLUSTER:
+#   The notebook queries MLflow (RHOAI internal), Prometheus (OpenShift monitoring),
+#   Redis, and MinIO — all reachable via cluster-internal DNS. Running locally
+#   requires multiple port-forwards and VPN; running in-cluster is zero-config.
+#
+# WHAT IT DOES:
+#   1. pip-installs papermill + notebook deps (mlflow, prometheus_api_client, etc.)
+#   2. Runs papermill with all env vars injected as parameters
+#   3. Uploads output notebook + PNG charts to s3://smartshop-models/notebooks/
+#
+# USAGE:
+#   # First, create/update the notebook ConfigMap (idempotent):
+#   oc create configmap smartshop-metrics-notebook \
+#     --from-file=metrics_analysis.ipynb=notebooks/metrics_analysis.ipynb \
+#     -n smartshop --dry-run=client -o yaml | oc apply -f -
+#
+#   # Then submit the job:
+#   set -a; source .env; set +a
+#   python3 scripts/render_yaml.py infrastructure/openshift/notebook-runner-job.yaml | oc apply -f -
+#
+#   # Watch logs:
+#   oc logs -n smartshop job/smartshop-notebook-runner -f
+#
+#   # Retrieve output notebook:
+#   aws s3 cp s3://smartshop-models/notebooks/metrics_analysis_out.ipynb . \
+#     --endpoint-url $MINIO_ENDPOINT_EXTERNAL
+#
+# OUTPUTS (uploaded to MinIO):
+#   s3://smartshop-models/notebooks/metrics_analysis_out.ipynb  ← executed notebook
+#   s3://smartshop-models/notebooks/mlflow_gpu_vs_cpu.png
+#   s3://smartshop-models/notebooks/dcgm_combined.png
+#   s3://smartshop-models/notebooks/redis_ops.png
+#   s3://smartshop-models/notebooks/training_loss_curves.png
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smartshop-notebook-runner
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: observability
+spec:
+  ttlSecondsAfterFinished: 86400   # keep pod logs for 24h
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: smartshop
+        component: notebook-runner
+    spec:
+      restartPolicy: Never
+      serviceAccountName: spark     # needs read access to pods/logs for metric collection
+      containers:
+        - name: notebook-runner
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -xeuo
+            - pipefail
+            - -c
+            - |
+              # ── Install deps ────────────────────────────────────────────────
+              pip install --quiet \
+                papermill nbformat nbconvert \
+                mlflow boto3 s3fs fsspec \
+                pandas matplotlib seaborn plotly \
+                prometheus-api-client python-dotenv \
+                redis
+
+              # ── Run notebook ─────────────────────────────────────────────
+              INPUT=/notebook/metrics_analysis.ipynb
+              OUTPUT=/tmp/metrics_analysis_out.ipynb
+
+              papermill "$INPUT" "$OUTPUT" \
+                -p PROM_URL        "$PROMETHEUS_URL" \
+                -p PROM_TOKEN      "$PROMETHEUS_TOKEN" \
+                -p MLFLOW_URI      "$MLFLOW_TRACKING_URI" \
+                -p MINIO_ENDPOINT  "$MINIO_ENDPOINT" \
+                -p AWS_KEY         "$AWS_ACCESS_KEY_ID" \
+                -p AWS_SECRET      "$AWS_SECRET_ACCESS_KEY" \
+                -p S3_BUCKET       "$S3_MODELS_BUCKET" \
+                -p NAMESPACE       "$NAMESPACE" \
+                --kernel python3 \
+                --log-output \
+                2>&1 | tee /tmp/papermill.log
+
+              echo "Papermill exit: $?"
+
+              # ── Upload outputs to MinIO ──────────────────────────────────
+              export AWS_ENDPOINT_URL_S3="$MINIO_ENDPOINT"
+
+              python3 - <<'PYEOF'
+              import boto3, os, glob
+              s3 = boto3.client(
+                  "s3",
+                  endpoint_url=os.environ["MINIO_ENDPOINT"],
+                  aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"],
+                  aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"],
+              )
+              bucket = os.environ.get("S3_MODELS_BUCKET", "smartshop-models")
+
+              files = ["/tmp/metrics_analysis_out.ipynb", "/tmp/papermill.log"] + \
+                      glob.glob("/tmp/*.png") + glob.glob("/tmp/dcgm_*.png") + \
+                      glob.glob("/tmp/mlflow_*.png") + glob.glob("/tmp/redis_*.png") + \
+                      glob.glob("/tmp/training_*.png")
+
+              uploaded = []
+              for fpath in files:
+                  if os.path.exists(fpath):
+                      key = f"notebooks/{os.path.basename(fpath)}"
+                      s3.upload_file(fpath, bucket, key)
+                      uploaded.append(key)
+                      print(f"  uploaded → s3://{bucket}/{key}")
+
+              print(f"\nUploaded {len(uploaded)} file(s) to MinIO")
+              PYEOF
+
+              echo "Done. Retrieve outputs:"
+              echo "  aws s3 ls s3://${S3_MODELS_BUCKET}/notebooks/ --endpoint-url ${MINIO_ENDPOINT_EXTERNAL}"
+          env:
+            - name: PROMETHEUS_URL
+              value: "https://thanos-querier.openshift-monitoring.svc.cluster.local:9091"
+            - name: PROMETHEUS_TOKEN
+              value: "${PROMETHEUS_TOKEN}"
+            - name: MLFLOW_TRACKING_URI
+              value: "${MLFLOW_TRACKING_URI}"
+            - name: MINIO_ENDPOINT
+              value: "${MINIO_ENDPOINT}"
+            - name: MINIO_ENDPOINT_EXTERNAL
+              value: "${MINIO_ENDPOINT_EXTERNAL}"
+            - name: S3_MODELS_BUCKET
+              value: "${S3_MODELS_BUCKET}"
+            - name: NAMESPACE
+              value: "${NAMESPACE}"
+          envFrom:
+            - secretRef:
+                name: smartshop-credentials   # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+          volumeMounts:
+            - name: notebook
+              mountPath: /notebook
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+      volumes:
+        - name: notebook
+          configMap:
+            name: smartshop-metrics-notebook

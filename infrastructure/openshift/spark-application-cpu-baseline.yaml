@@ -1,0 +1,124 @@
+---
+# CPU Baseline Feature Engineering — A/B comparison target for RAPIDS GPU demo.
+#
+# PURPOSE (Summit demo)
+#   Run this BEFORE spark-application-rapids.yaml to establish the CPU baseline.
+#   Compare [METRIC] total_elapsed_s and throughput_rows_per_s in the driver logs
+#   to show GPU speedup.
+#
+# IDENTICAL to spark-application-rapids.yaml except:
+#   - image: spark-rapids (same apache/spark:3.5.3 base — required for cluster-mode driver binary)
+#   - spark.rapids.sql.enabled=false (RAPIDS plugin present but disabled → true CPU-only run)
+#   - no executor.gpu block (no GPU resource request)
+#   - name suffix: -cpu-baseline (safe to run alongside RAPIDS job)
+#
+# WHY same image: spark-jobs image (UBI9/pyspark pip) lacks the Spark distribution `driver`
+# binary needed by the Spark Operator. Using same apache/spark:3.5.3 base ensures apples-to-
+# apples JVM comparison with only the plugin enable/disable as the variable.
+#
+# WHAT TO CAPTURE FOR THE DEMO:
+#   After the job completes, grep the driver pod logs:
+#     oc logs -n smartshop <driver-pod> | grep METRIC
+#   Key numbers:
+#     [METRIC] total_elapsed_s=<N> s           ← CPU wall-clock time
+#     [METRIC] throughput_rows_per_s=<N> rows/s ← CPU throughput
+#   Then repeat with RAPIDS and compute speedup = CPU_elapsed / GPU_elapsed.
+#
+# USAGE:
+#   /bin/bash -c 'set -a; source .env; set +a; envsubst < infrastructure/openshift/spark-application-cpu-baseline.yaml | oc apply -f -'
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: smartshop-feature-engineering-cpu-baseline
+  namespace: ${NAMESPACE}
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: "${SPARK_RAPIDS_IMAGE}"   # same apache/spark:3.5.3 base as RAPIDS job (cluster-mode driver binary required)
+  imagePullPolicy: Always
+  mainApplicationFile: "local:///opt/spark/work-dir/feature_engineering.py"
+  arguments:
+    - "--input"
+    - "s3a://${S3_RAW_BUCKET}/raw/reviews/Electronics/,s3a://${S3_RAW_BUCKET}/raw/reviews/Books/,s3a://${S3_RAW_BUCKET}/raw/reviews/Home_and_Kitchen/"
+    - "--output"
+    - "s3a://${S3_FEATURES_BUCKET}/cpu-baseline/"
+    - "--metadata-input"
+    - "s3a://${S3_RAW_BUCKET}/raw/metadata/"
+  sparkVersion: "3.5.3"
+  restartPolicy:
+    type: Never
+  hadoopConf:
+    fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    fs.s3a.path.style.access: "true"
+    fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    # EnvironmentVariableCredentialsProvider was removed in hadoop-aws 3.3.x;
+    # use the AWS SDK class directly (reads AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from env)
+    fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    fs.s3a.metadatastore.impl: "org.apache.hadoop.fs.s3a.s3guard.NullMetadataStore"
+  sparkConf:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.shuffle.partitions: "200"
+    # S3A connector JARs — served from MinIO (no Maven download needed, works in air-gapped clusters)
+    # Upload once with: oc apply -f infrastructure/openshift/upload-spark-jars-job.yaml
+    spark.jars: "http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
+    # No spark.plugins set → RAPIDS JAR in /opt/spark/jars/ is ignored → pure CPU run
+    # Observability — same config as RAPIDS job for apples-to-apples comparison
+    spark.ui.prometheus.enabled: "true"
+    spark.executor.processTreeMetrics.enabled: "true"
+    spark.metrics.conf: "/etc/spark-metrics/metrics.properties"
+    # Spark History Server — event logs written to MinIO s3a://
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "s3a://smartshop-spark-logs/events"
+    spark.eventLog.compress: "true"
+  driver:
+    cores: ${SPARK_DRIVER_CORES:-2}
+    memory: "${SPARK_DRIVER_MEMORY:-4g}"
+    serviceAccount: spark
+    # Redirect spark.jars download dir to /tmp (work-dir is owned by root, not writable by uid 1001)
+    javaOptions: "-Duser.dir=/tmp"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
+      - secretRef:
+          name: smartshop-mlflow-token
+    volumeMounts:
+      - name: spark-metrics-config
+        mountPath: /etc/spark-metrics
+      - name: feature-engineering-script
+        mountPath: /opt/spark/work-dir/feature_engineering.py
+        subPath: feature_engineering.py
+      - name: mlflow-metrics-script
+        mountPath: /opt/spark/work-dir/utils/mlflow_metrics.py
+        subPath: mlflow_metrics.py
+  executor:
+    cores: ${SPARK_EXECUTOR_CORES:-4}
+    instances: ${SPARK_EXECUTOR_INSTANCES:-4}
+    memory: "${SPARK_EXECUTOR_MEMORY:-8g}"
+    javaOptions: "-Duser.dir=/tmp"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
+      - secretRef:
+          name: smartshop-mlflow-token
+    volumeMounts:
+      - name: spark-metrics-config
+        mountPath: /etc/spark-metrics
+      - name: feature-engineering-script
+        mountPath: /opt/spark/work-dir/feature_engineering.py
+        subPath: feature_engineering.py
+      - name: mlflow-metrics-script
+        mountPath: /opt/spark/work-dir/utils/mlflow_metrics.py
+        subPath: mlflow_metrics.py
+  volumes:
+    - name: spark-metrics-config
+      configMap:
+        name: spark-metrics-config
+    - name: feature-engineering-script
+      configMap:
+        name: smartshop-feature-engineering-script
+        defaultMode: 0644
+    - name: mlflow-metrics-script
+      configMap:
+        name: spark-mlflow-metrics-script
+        defaultMode: 0644

@@ -1,0 +1,18 @@
+---
+# Shared NFS PVC — mounted by MinIO and notebooks simultaneously (ReadWriteMany)
+# MinIO stores all bucket data here; notebooks can mount it at /mnt/data for direct inspection
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: smartshop-shared-storage
+  namespace: smartshop
+  labels:
+    app: smartshop
+    component: shared-storage
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-csi
+  resources:
+    requests:
+      storage: 200Gi

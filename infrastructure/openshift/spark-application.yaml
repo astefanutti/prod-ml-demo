@@ -1,43 +1,63 @@
 ---
-# Kubeflow Spark Operator - Feature Engineering Job
+# spark-application.yaml — SUPERSEDED / NOT USED IN PRIMARY PIPELINE
+#
+# This is a monolithic all-in-one manifest bundling feature-engineering (CPU),
+# text-preprocessing, and embedding-generation into a single apply.
+#
+# PRIMARY PIPELINE uses the split manifests instead:
+#   - spark-application-rapids.yaml   (GPU feature engineering)
+#   - spark-application-cpu-baseline.yaml (CPU A/B baseline)
+#   - spark-application-text-preprocessing.yaml
+#   - spark-application-embedding.yaml (separate, manual)
+#
+# This file is kept for reference and for `make spark-run` (local dev convenience).
+# Do NOT apply via apply-all.sh — it conflicts with the GPU/CPU split manifests.
+#
+# Original header: Kubeflow Spark Operator - Feature Engineering Job
+# S3 credentials injected from smartshop-credentials Secret via envFrom.
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
   name: smartshop-feature-engineering
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/smartshop/spark-jobs:latest"
+  image: "${SPARK_JOBS_IMAGE}"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/feature_engineering.py"
   arguments:
     - "--input"
-    - "s3a://smartshop/raw/"
+    - "s3a://${S3_RAW_BUCKET}/raw/reviews/"
     - "--output"
-    - "s3a://smartshop/features/"
+    - "s3a://${S3_FEATURES_BUCKET}/"
     - "--metadata-input"
-    - "s3a://smartshop/raw/metadata/"
-  sparkVersion: "3.5.0"
+    - "s3a://${S3_RAW_BUCKET}/raw/metadata/"
+  sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
     onFailureRetryInterval: 30
   hadoopConf:
-    fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
-    fs.s3a.access.key: "minioadmin"
-    fs.s3a.secret.key: "minioadmin"
+    fs.s3a.endpoint: "${MINIO_ENDPOINT}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
-    memory: "4g"
-    serviceAccount: spark-operator
+    memory: "${SPARK_DRIVER_MEMORY}"
+    serviceAccount: spark
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
   executor:
-    cores: 4
-    instances: 4
-    memory: "8g"
+    cores: ${SPARK_EXECUTOR_CORES}
+    instances: ${SPARK_EXECUTOR_INSTANCES}
+    memory: "${SPARK_EXECUTOR_MEMORY}"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
 
 ---
 # Text Preprocessing Job
@@ -45,37 +65,42 @@ apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
   name: smartshop-text-preprocessing
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/smartshop/spark-jobs:latest"
+  image: "${SPARK_JOBS_IMAGE}"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/text_preprocessing.py"
   arguments:
     - "--input"
-    - "s3a://smartshop/raw/"
+    - "s3a://${S3_RAW_BUCKET}/raw/reviews/"
     - "--output"
-    - "s3a://smartshop/llm_data/"
-  sparkVersion: "3.5.0"
+    - "s3a://${S3_FEATURES_BUCKET}/llm_data/"
+  sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
   hadoopConf:
-    fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
-    fs.s3a.access.key: "minioadmin"
-    fs.s3a.secret.key: "minioadmin"
+    fs.s3a.endpoint: "${MINIO_ENDPOINT}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
-    memory: "4g"
-    serviceAccount: spark-operator
+    memory: "${SPARK_DRIVER_MEMORY}"
+    serviceAccount: spark
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
   executor:
-    cores: 4
-    instances: 4
-    memory: "8g"
+    cores: ${SPARK_EXECUTOR_CORES}
+    instances: ${SPARK_EXECUTOR_INSTANCES}
+    memory: "${SPARK_EXECUTOR_MEMORY}"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
 
 ---
 # Embedding Generation Job
@@ -83,34 +108,41 @@ apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
   name: smartshop-embedding-generation
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/smartshop/spark-jobs:latest"
+  image: "${SPARK_JOBS_IMAGE}"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/embedding_generation.py"
   arguments:
     - "--input"
-    - "s3a://smartshop/raw/"
+    - "s3a://${S3_RAW_BUCKET}/raw/reviews/"
     - "--output"
-    - "s3a://smartshop/features/review_embeddings/"
-  sparkVersion: "3.5.0"
+    - "s3a://${S3_EMBEDDINGS_BUCKET}/review_embeddings/"
+    - "--model"
+    - "${EMBED_MODEL}"
+  sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
   hadoopConf:
-    fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
-    fs.s3a.access.key: "minioadmin"
-    fs.s3a.secret.key: "minioadmin"
+    fs.s3a.endpoint: "${MINIO_ENDPOINT}"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.EnvironmentVariableCredentialsProvider"
   driver:
     cores: 2
-    memory: "8g"
-    serviceAccount: spark-operator
+    memory: "${SPARK_DRIVER_MEMORY}"
+    serviceAccount: spark
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
   executor:
-    cores: 4
-    instances: 8
-    memory: "16g"
+    cores: ${SPARK_EXECUTOR_CORES}
+    instances: ${SPARK_EMBED_EXECUTOR_INSTANCES}
+    memory: "${SPARK_EMBED_EXECUTOR_MEMORY}"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials

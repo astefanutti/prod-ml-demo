@@ -1,0 +1,57 @@
+# RAPIDS GPU-accelerated Spark — JAR injection approach (no NGC account needed).
+# Base is identical to Containerfile.spark — shares all layers except the RAPIDS JAR.
+# JAR source: https://repo1.maven.org/maven2/com/nvidia/rapids-4-spark_2.12/
+FROM docker.io/apache/spark:3.5.3
+
+USER 0
+
+# gcc + python3-dev for compiled wheels (numpy, pyarrow etc.)
+# python3 3.8.10 is pre-installed in apache/spark:3.5.3 (Ubuntu 20.04)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-dev python3-pip gcc && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_CACHE_DIR=/tmp/uv-cache
+
+WORKDIR /opt/spark/work-dir
+
+COPY build/requirements/spark-rapids.txt requirements.txt
+COPY spark/ .
+
+# --system: no venv in the base image; --python python3 = 3.8 (pre-installed on focal)
+RUN uv pip install --python python3 --system --no-cache -r requirements.txt
+
+# Download hadoop-aws + AWS SDK JARs into the Spark distribution jars directory.
+# These are NOT included in apache/spark:3.5.3 base image and are required for s3a:// support.
+# Versions must match the hadoop-client version bundled with Spark 3.5.3 (3.3.4).
+RUN curl -fsSL -o /opt/spark/jars/hadoop-aws-3.3.4.jar \
+        https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    curl -fsSL -o /opt/spark/jars/aws-java-sdk-bundle-1.12.262.jar \
+        https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar
+
+# RAPIDS plugin JAR — placed in /opt/spark/jars/ so Spark auto-loads it (no extraClassPath needed).
+# cuda12 variant for A100/H100 (CUDA 12.x). Swap for -cuda13 if cluster uses CUDA 13.
+# Upgrading RAPIDS: change the version in the URL only — no other changes needed.
+# Ref: https://docs.nvidia.com/spark-rapids/user-guide/latest/getting-started/kubernetes.html
+# cuda13 variant: cluster uses CUDA 13.0 (driver 580.x); cuda12 JNI can't find libcudart.so.12.
+# When rebuilding for a cuda12 cluster, swap to: rapids-4-spark_2.12-26.02.2-cuda12.jar
+ADD https://repo1.maven.org/maven2/com/nvidia/rapids-4-spark_2.12/26.02.2/rapids-4-spark_2.12-26.02.2-cuda13.jar \
+    /opt/spark/jars/rapids-4-spark.jar
+
+# GPU discovery script — required by spark.executor.resource.gpu.discoveryScript.
+ADD https://raw.githubusercontent.com/apache/spark/v3.5.3/examples/src/main/scripts/getGpusResources.sh \
+    /opt/spark/getGpusResources.sh
+
+# ADD creates files as root:root with mode 0600 (no BuildKit) — make JARs world-readable
+# so the non-root container user (1001) can load them at runtime.
+RUN chmod 644 /opt/spark/jars/rapids-4-spark.jar && chmod +x /opt/spark/getGpusResources.sh
+
+ENV SPARK_HOME=/opt/spark
+ENV PATH=${SPARK_HOME}/bin:${PATH}
+
+# Allow the default non-root user (1001) to write to work-dir.
+# Required for spark.jars HTTP download during spark-submit in cluster mode.
+RUN chown -R 1001:0 /opt/spark/work-dir && chmod -R g+rwX /opt/spark/work-dir
+
+USER 1001

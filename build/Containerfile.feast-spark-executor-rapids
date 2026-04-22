@@ -1,0 +1,36 @@
+# feast-spark-executor-rapids -- k8s:// Spark executor with RAPIDS GPU acceleration
+#
+# Extends feast-spark-executor (CPU baseline) with:
+#   - RAPIDS plugin JAR (cuda13): GPU-accelerated SQL/DataFrame ops
+#   - GPU discovery script: required by spark.executor.resource.gpu.discoveryScript
+#
+# Benchmark story:
+#   feast-spark-executor        -> k8s:// distributed workers, CPU only  (baseline)
+#   feast-spark-executor-rapids -> k8s:// distributed workers, RAPIDS GPU (this image)
+#
+# RAPIDS 26.02.2-cuda13: for A100/H100 with CUDA 13.x driver (580.x).
+# Swap ADD url to -cuda12 variant if cluster uses CUDA 12.x.
+#
+# Build:
+#   oc start-build feast-spark-executor-rapids -n smartshop --follow
+
+ARG REGISTRY
+FROM ${REGISTRY}/smartshop-feast-spark-executor:latest
+
+USER 0
+
+# RAPIDS plugin JAR alongside hadoop-aws in pyspark jars dir.
+# /opt/spark/jars is symlinked to the pyspark jars directory (set in feast-spark-executor).
+# Spark auto-loads all JARs from SPARK_HOME/jars at startup -- no extraClassPath needed.
+RUN curl -fsSL -o /opt/spark/jars/rapids-4-spark.jar \
+      https://repo1.maven.org/maven2/com/nvidia/rapids-4-spark_2.12/26.02.2/rapids-4-spark_2.12-26.02.2-cuda13.jar && \
+    chmod 644 /opt/spark/jars/rapids-4-spark.jar && \
+    echo "RAPIDS JAR installed: $(ls -lh /opt/spark/jars/rapids-4-spark.jar)"
+
+# GPU discovery script: Spark calls this on each executor to enumerate GPUs.
+# Must match spark.executor.resource.gpu.discoveryScript in feast-spark-engine-rapids.yaml.
+ADD https://raw.githubusercontent.com/apache/spark/v3.5.3/examples/src/main/scripts/getGpusResources.sh \
+    /opt/spark/getGpusResources.sh
+RUN chmod +x /opt/spark/getGpusResources.sh
+
+USER 1001

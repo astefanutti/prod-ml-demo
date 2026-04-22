@@ -1,0 +1,78 @@
+---
+# Spark Metrics Configuration — enables Prometheus scraping + RAPIDS GPU task metrics.
+#
+# WHAT THIS ENABLES:
+#   1. PrometheusServlet on driver + each executor (/metrics/prometheus endpoint)
+#      Scraped by OCP monitoring; shows executor heap/GC/shuffle metrics in Prometheus.
+#   2. JVM source metrics per executor (GC pause times, heap usage breakdown)
+#   3. RAPIDS-specific sparkConf additions (see spark-application-rapids.yaml):
+#      spark.rapids.sql.explain=ALL       → driver stdout logs which ops ran on GPU vs fell back
+#      spark.rapids.sql.metrics.level=DEBUG → per-task gpuTimeNs in Spark UI Task tab
+#      spark.ui.prometheus.enabled=true   → built-in Spark 3.x Prometheus endpoint
+#
+# PROMETHEUS SCRAPE:
+#   OCP monitoring auto-discovers pods with these annotations. The SparkApplication
+#   manifests set these on driver + executor pods via `labels:`.
+#   Alternatively query directly:
+#     curl http://<driver-pod-ip>:4040/metrics/prometheus
+#     curl http://<executor-pod-ip>:4040/metrics/prometheus
+#
+# KEY METRICS EXPOSED:
+#   metrics_executor_*                   — shuffle read/write bytes, GC time
+#   metrics_jvm_heap_used_bytes          — per-executor JVM heap
+#   metrics_BlockManager_*               — cached RDD/broadcast size
+#   (RAPIDS) DCGM_FI_DEV_GPU_UTIL        — GPU utilization % (from dcgm-exporter, not Spark)
+#   (RAPIDS) DCGM_FI_DEV_FB_USED         — GPU framebuffer memory used (bytes)
+#   (RAPIDS) DCGM_FI_PROF_DRAM_ACTIVE    — memory bus activity ratio (0-1)
+#   (RAPIDS) DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL — NVLink bandwidth (cross-GPU comms)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-metrics-config
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: observability
+data:
+  metrics.properties: |
+    # PrometheusServlet — exposes all Spark internal metrics at /metrics/prometheus
+    *.sink.prometheusServlet.class=org.apache.spark.metrics.sink.PrometheusServlet
+    *.sink.prometheusServlet.path=/metrics/prometheus
+
+    # JVM source — per-executor heap, GC, thread counts
+    executor.source.jvm.class=org.apache.spark.metrics.source.JvmSource
+    driver.source.jvm.class=org.apache.spark.metrics.source.JvmSource
+
+    # CSV sink — writes metrics snapshots to /tmp/spark-metrics-csv/ inside the pod
+    # Disabled by default; enable for offline analysis if needed.
+    # *.sink.csv.class=org.apache.spark.metrics.sink.CsvSink
+    # *.sink.csv.period=15
+    # *.sink.csv.unit=seconds
+    # *.sink.csv.directory=/tmp/spark-metrics-csv
+
+  spark-scrape-config.yaml: |
+    # Informational only — OCP ServiceMonitor below handles actual scraping.
+
+---
+# PodMonitor — scrapes Spark driver + executor pods at :4040/metrics/prometheus.
+# OCP user-workload monitoring picks this up automatically.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: spark-jobs
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: observability
+    prometheus: user-workload
+spec:
+  selector:
+    matchExpressions:
+      - key: spark-role
+        operator: In
+        values: [driver, executor]
+  podMetricsEndpoints:
+    - port: "4040"
+      path: /metrics/prometheus
+      interval: 15s
+      scheme: http

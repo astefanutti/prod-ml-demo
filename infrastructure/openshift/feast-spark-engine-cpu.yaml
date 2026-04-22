@@ -1,0 +1,61 @@
+---
+# feast-spark-engine-cpu ConfigMap
+#
+# k8s:// cluster mode with distributed CPU executor pods — no RAPIDS.
+# This is the BASELINE for comparing against feast-spark-engine-rapids.yaml.
+#
+# Benchmark progression:
+#   1. feast-spark-engine.yaml       local[*]  single pod, CPU     (already done)
+#   2. feast-spark-engine-cpu.yaml   k8s://    4 CPU workers       (this file)
+#   3. feast-spark-engine-rapids.yaml k8s://   4 GPU workers+RAPIDS (next step)
+#
+# Prerequisites:
+#   - feast-spark-executor image built: oc start-build feast-spark-executor -n ${NAMESPACE}
+#   - spark ServiceAccount: oc create sa spark -n ${NAMESPACE}
+#   - RBAC: oc adm policy add-role-to-user edit -z spark -n ${NAMESPACE}
+#
+# Apply:
+#   envsubst < infrastructure/openshift/feast-spark-engine-cpu.yaml | oc apply -f -
+#   oc rollout restart deployment/feast-smartshop-feast -n ${NAMESPACE}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feast-spark-engine
+  namespace: ${NAMESPACE}
+data:
+  config: |
+    type: spark.engine
+    partitions: 10
+
+    # k8s:// cluster mode -- 4 CPU executor pods using feast-spark-executor image
+    spark.master: "k8s://${OCP_API_URL}"
+    spark.submit.deployMode: "client"
+    spark.driver.memory: "8g"
+    spark.executor.instances: "4"
+    spark.executor.memory: "8g"
+    spark.executor.cores: "4"
+
+    # Executor pod image -- CPU only, no RAPIDS
+    spark.kubernetes.container.image: "${REGISTRY}/smartshop-feast-spark-executor:latest"
+    spark.kubernetes.authenticate.driver.serviceAccountName: "spark"
+    spark.kubernetes.namespace: "${NAMESPACE}"
+
+    spark.kubernetes.driverEnv.JAVA_TOOL_OPTIONS: "-Dcom.redhat.fips=false"
+    spark.kubernetes.executorEnv.JAVA_TOOL_OPTIONS: "-Dcom.redhat.fips=false"
+
+    spark.ui.enabled: "false"
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "s3a://smartshop-features/spark-events/"
+    spark.sql.session.timeZone: "UTC"
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
+    spark.sql.execution.arrow.pyspark.enabled: "true"
+    spark.sql.execution.arrow.fallback.enabled: "true"
+    spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+    spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+    spark.hadoop.fs.s3a.connection.maximum: "100"
+    spark.hadoop.fs.s3a.threads.max: "64"
