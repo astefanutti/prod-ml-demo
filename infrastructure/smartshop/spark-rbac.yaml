@@ -1,0 +1,27 @@
+---
+# ServiceAccount and RBAC for Spark Operator in the smartshop namespace.
+# Required for SparkApplication pods to be scheduled and managed by the operator.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: spark
+  namespace: smartshop
+  labels:
+    app: smartshop
+    component: spark
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: spark-smartshop
+  labels:
+    app: smartshop
+    component: spark
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+  - kind: ServiceAccount
+    name: spark
+    namespace: smartshop

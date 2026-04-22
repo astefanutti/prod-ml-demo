@@ -1,0 +1,25 @@
+---
+# Enable OCP user-workload monitoring so ServiceMonitors in the `smartshop` namespace
+# are scraped by the platform Prometheus.
+#
+# Without this ConfigMap, custom ServiceMonitors have no effect — the platform
+# Prometheus only watches openshift-* namespaces by default.
+#
+# APPLY ONCE (cluster-admin required):
+#   oc apply -f infrastructure/openshift/user-workload-monitoring.yaml
+#
+# VERIFY:
+#   oc get prometheus -n openshift-user-workload-monitoring
+#   oc get pod -n openshift-user-workload-monitoring
+#
+# After enabling, metrics from redis_exporter, Spark PrometheusServlet, and any
+# other ServiceMonitor in the smartshop namespace will appear in:
+#   OCP Console → Observe → Metrics (switch to "User" data source)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    enableUserWorkload: true

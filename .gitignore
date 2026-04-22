@@ -4,7 +4,8 @@ __pycache__/
 *$py.class
 *.egg-info/
 dist/
-build/
+# build/ contains Containerfiles — do not ignore
+# build artifacts are in dist/ or .build/
 *.egg
 .eggs/
 *.so

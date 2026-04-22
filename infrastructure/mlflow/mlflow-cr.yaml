@@ -1,0 +1,69 @@
+---
+# MLflow CR — managed by the RHOAI MLflow operator in redhat-ods-applications.
+#
+# Artifact flow (zero-copy):
+#   TrainJob → MLflow logs to s3://smartshop-models/ → Model Registry registers same path
+#   → KServe reads storageUri (no re-upload at any stage)
+#
+# Prerequisites:
+#   1. postgres deployed in smartshop namespace (infrastructure/mlflow/postgres.yaml)
+#   2. mlflow-postgres-secret updated to point to postgres.smartshop.svc.cluster.local
+#   3. mlflow-s3-credentials secret created in redhat-ods-applications (step below)
+#
+# Create the S3 credentials secret in redhat-ods-applications:
+#   oc create secret generic mlflow-s3-credentials \
+#     --from-literal=AWS_ACCESS_KEY_ID=<your-minio-access-key> \
+#     --from-literal=AWS_SECRET_ACCESS_KEY=<your-minio-secret-key> \
+#     --from-literal=MLFLOW_S3_ENDPOINT_URL=http://minio.smartshop.svc.cluster.local:9000 \
+#     --from-literal=AWS_DEFAULT_REGION=us-east-1 \
+#     -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
+#
+# Update the backend secret to new postgres location.
+# NOTE: Use the postgres Service ClusterIP directly — DNS-based hostnames fail from
+# redhat-ods-applications due to OVN-K NetworkPolicy CNAME resolution restrictions.
+# Get the ClusterIP first:
+#   POSTGRES_IP=$(oc get svc postgres -n smartshop -o jsonpath='{.spec.clusterIP}')
+#   PG_USER=<your-pg-user> PG_PASS=<your-pg-password>
+#   oc create secret generic mlflow-postgres-secret \
+#     --from-literal=uri="postgresql+psycopg2://${PG_USER}:${PG_PASS}@${POSTGRES_IP}:5432/mlflow?sslmode=disable" \
+#     -n redhat-ods-applications --dry-run=client -o yaml | oc apply -f -
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+  namespace: redhat-ods-applications
+spec:
+  replicas: 1
+  workers: 1
+
+  # Backend: PostgreSQL in smartshop namespace
+  backendStoreUriFrom:
+    key: uri
+    name: mlflow-postgres-secret
+
+  # Artifacts: written to MinIO S3, not local PVC
+  # This is the actual storage location (--artifacts-destination)
+  artifactsDestination: "s3://smartshop-models"
+
+  # Serve artifacts through MLflow's proxy API
+  serveArtifacts: true
+
+  # S3 credentials injected into the MLflow pod
+  envFrom:
+    - secretRef:
+        name: mlflow-s3-credentials
+
+  storage:
+    accessModes: [ReadWriteMany]
+    storageClassName: nfs-csi
+    resources:
+      requests:
+        storage: 20Gi
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi

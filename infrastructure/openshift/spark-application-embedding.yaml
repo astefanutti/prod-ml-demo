@@ -1,0 +1,106 @@
+---
+# spark-application-embedding.yaml — MANUAL APPLY ONLY (not in apply-all.sh)
+#
+# Embedding generation is a separate pipeline step that runs after text-preprocessing.
+# It is NOT submitted by apply-all.sh phase_spark and must be applied manually:
+#   envsubst < infrastructure/openshift/spark-application-embedding.yaml | oc apply -f -
+#
+# wait-and-materialize.sh does NOT wait for this job — it runs independently of Feast materialization.
+#
+# Original header:
+#   Rebuild with: oc start-build smartshop-spark-jobs-rapids -n smartshop --follow
+#
+# WHAT IT DOES
+#   1. Reads raw reviews, combines title + text into embed_text
+#   2. Generates 384-dim embeddings via all-MiniLM-L6-v2 pandas UDF (batched, 64/batch)
+#   3. Writes Parquet to S3_EMBEDDINGS_BUCKET/review_embeddings/ with event_timestamp for Feast
+#
+# NOTE: RAPIDS plugin is intentionally NOT enabled here — pandas UDFs run on CPU.
+#   GPU benefit here is negligible; the bottleneck is the transformer inference, not SQL ops.
+#
+# USAGE (after image rebuild)
+#   set -a; source .env; set +a
+#   envsubst < infrastructure/openshift/spark-application-embedding.yaml | oc apply -f -
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: smartshop-embedding-generation
+  namespace: ${NAMESPACE}
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: "${SPARK_RAPIDS_IMAGE}"
+  imagePullPolicy: Always
+  mainApplicationFile: "local:///opt/spark/work-dir/embedding_generation.py"
+  arguments:
+    - "--input"
+    - "s3a://${S3_RAW_BUCKET}/raw/reviews/Electronics/,s3a://${S3_RAW_BUCKET}/raw/reviews/Books/,s3a://${S3_RAW_BUCKET}/raw/reviews/Home_and_Kitchen/"
+    - "--output"
+    - "s3a://${S3_EMBEDDINGS_BUCKET}/review_embeddings/"
+    - "--max-reviews"
+    - "5000000"   # 5M is sufficient for Feast vector store + Summit demo
+  sparkVersion: "3.5.3"
+  restartPolicy:
+    type: Never
+  hadoopConf:
+    fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    fs.s3a.path.style.access: "true"
+    fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    fs.s3a.metadatastore.impl: "org.apache.hadoop.fs.s3a.s3guard.NullMetadataStore"
+  sparkConf:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.shuffle.partitions: "200"
+    spark.jars: "http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
+    spark.ui.prometheus.enabled: "true"
+    spark.executor.processTreeMetrics.enabled: "true"
+    spark.metrics.conf: "/etc/spark-metrics/metrics.properties"
+    # Spark History Server — event logs written to MinIO s3a://
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "s3a://smartshop-spark-logs/events"
+    spark.eventLog.compress: "true"
+    # Transformers model download cache → /tmp (work-dir not writable by uid 1001 without rebuild)
+    spark.executorEnv.TRANSFORMERS_CACHE: "/tmp/hf-cache"
+    spark.executorEnv.HF_HOME: "/tmp/hf-home"
+  driver:
+    cores: ${SPARK_DRIVER_CORES:-2}
+    memory: "${SPARK_DRIVER_MEMORY:-4g}"
+    serviceAccount: spark
+    javaOptions: "-Duser.dir=/tmp"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
+      - secretRef:
+          name: smartshop-mlflow-token
+    volumeMounts:
+      - name: spark-metrics-config
+        mountPath: /etc/spark-metrics
+      - name: embedding-script
+        mountPath: /opt/spark/work-dir/embedding_generation.py
+        subPath: embedding_generation.py
+  executor:
+    cores: 4
+    instances: 4
+    memory: "16g"
+    memoryOverhead: "4g"
+    javaOptions: "-Duser.dir=/tmp"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
+      - secretRef:
+          name: smartshop-mlflow-token
+    volumeMounts:
+      - name: spark-metrics-config
+        mountPath: /etc/spark-metrics
+      - name: embedding-script
+        mountPath: /opt/spark/work-dir/embedding_generation.py
+        subPath: embedding_generation.py
+  volumes:
+    - name: spark-metrics-config
+      configMap:
+        name: spark-metrics-config
+    - name: embedding-script
+      configMap:
+        name: smartshop-embedding-script
+        defaultMode: 0644

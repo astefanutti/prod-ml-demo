@@ -1,0 +1,15 @@
+# RAPIDS spark image — feature engineering, text preprocessing, embedding generation
+# Base image apache/spark:3.5.3 ships Python 3.8 (Ubuntu 20.04 focal).
+# Feast >=0.60 requires Python 3.9+ so it's intentionally excluded here.
+# Feast materialization runs separately in the main spark-jobs image (UBI9/Python 3.12).
+pyspark==3.5.3
+pandas>=2.0.0,<2.2.0
+pyarrow>=14.0.0,<15.0.0
+fsspec>=2024.2.0
+s3fs>=2024.2.0
+# Required for embedding_generation.py (Phase 3c)
+# sentence-transformers 2.x is the last series supporting Python 3.8 (apache/spark:3.5.3 base)
+# 3.x requires Python >=3.9. Pin to 2.7.0 (last 2.x release with all-MiniLM-L6-v2 support).
+sentence-transformers==2.7.0
+# MLflow metrics logging
+mlflow>=2.10.0,<3.0.0

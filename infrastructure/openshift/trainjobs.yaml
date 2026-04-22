@@ -1,43 +1,11 @@
 ---
-# Kubeflow Trainer - Recommendation Model (DDP on K8s)
-apiVersion: trainer.kubeflow.org/v1alpha1
-kind: TrainJob
-metadata:
-  name: smartshop-rec-train
-  namespace: smartshop
-spec:
-  runtimeRef:
-    name: smartshop-rec-ddp
-  trainer:
-    image: quay.io/smartshop/rec-trainer:latest
-    command:
-      - torchrun
-    args:
-      - --nproc_per_node=1
-      - training/recommendation/train.py
-      - --data-dir=s3://smartshop/features
-      - --output-dir=s3://smartshop/models/recommendation
-      - --epochs=10
-      - --batch-size=1024
-      - --embed-dim=64
-    numNodes: 4
-    resourcesPerNode:
-      requests:
-        cpu: "4"
-        memory: "16Gi"
-        nvidia.com/gpu: "1"
-      limits:
-        cpu: "8"
-        memory: "32Gi"
-        nvidia.com/gpu: "1"
-
----
 # TrainingRuntime for DDP recommendation training
+# Uses envFrom to pull all credentials + MLflow config from secrets.
 apiVersion: trainer.kubeflow.org/v1alpha1
 kind: TrainingRuntime
 metadata:
   name: smartshop-rec-ddp
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   template:
     spec:
@@ -49,11 +17,30 @@ spec:
                 spec:
                   containers:
                     - name: trainer
+                      envFrom:
+                        - secretRef:
+                            name: smartshop-credentials
+                        - secretRef:
+                            name: smartshop-mlflow-token
                       env:
                         - name: FEAST_REPO_PATH
-                          value: "feast/feature_repo"
+                          value: "${FEAST_REPO_PATH}"
+                        # Feast remote registry — training pod reads feature defs from
+                        # feast server gRPC rather than direct PVC access
+                        - name: FEAST_REGISTRY_TYPE
+                          value: "${FEAST_REGISTRY_TYPE:-remote}"
+                        - name: FEAST_REGISTRY_PATH
+                          value: "${FEAST_REGISTRY_PATH:-feast-smartshop-feast-registry.smartshop.svc.cluster.local:6570}"
                         - name: S3_ENDPOINT
-                          value: "http://minio.smartshop.svc.cluster.local:9000"
+                          value: "${MINIO_ENDPOINT}"
+                        - name: AWS_ENDPOINT_URL_S3
+                          value: "${MINIO_ENDPOINT}"
+                        - name: AWS_DEFAULT_REGION
+                          value: "${AWS_DEFAULT_REGION}"
+                        - name: HF_HOME
+                          value: "${HF_HOME}"
+                        - name: NCCL_DEBUG
+                          value: "INFO"
                       volumeMounts:
                         - name: shm
                           mountPath: /dev/shm
@@ -64,39 +51,38 @@ spec:
                         sizeLimit: "8Gi"
 
 ---
-# Kubeflow Trainer - LLM Fine-Tuning (FSDP on Slurm)
+# Kubeflow Trainer - Recommendation Model (DDP on K8s)
 apiVersion: trainer.kubeflow.org/v1alpha1
 kind: TrainJob
 metadata:
-  name: smartshop-llm-finetune
-  namespace: smartshop
+  name: smartshop-rec-train
+  namespace: ${NAMESPACE}
 spec:
   runtimeRef:
-    name: smartshop-llm-fsdp-slurm
-    kind: ClusterTrainingRuntime
+    name: smartshop-rec-ddp
   trainer:
-    image: quay.io/smartshop/llm-trainer:latest
+    image: ${REC_TRAINER_IMAGE}
     command:
       - torchrun
     args:
-      - --nnodes=2
-      - --nproc_per_node=4
-      - training/llm/finetune.py
-      - --data-dir=s3://smartshop/llm_data
-      - --output-dir=s3://smartshop/models/llm-adapter
-      - --epochs=3
-      - --batch-size=4
-      - --gradient-accumulation=4
-    numNodes: 2
+      - --nproc_per_node=${REC_GPUS_PER_NODE}
+      - training/recommendation/train.py
+      - --data-dir=s3://${S3_FEATURES_BUCKET}
+      - --output-dir=s3://${S3_MODELS_BUCKET}/recommendation
+      - --epochs=${REC_TRAIN_EPOCHS}
+      - --batch-size=${REC_TRAIN_BATCH_SIZE}
+      - --embed-dim=${REC_EMBED_DIM}
+      - --hidden-dim=${REC_HIDDEN_DIM}
+    numNodes: ${REC_TRAIN_NODES}
     resourcesPerNode:
       requests:
         cpu: "16"
         memory: "64Gi"
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${REC_GPUS_PER_NODE}"
       limits:
         cpu: "32"
         memory: "128Gi"
-        nvidia.com/gpu: "4"
+        nvidia.com/gpu: "${REC_GPUS_PER_NODE}"
 
 ---
 # ClusterTrainingRuntime for FSDP LLM training dispatched to Slurm
@@ -115,30 +101,70 @@ spec:
                 spec:
                   containers:
                     - name: trainer
+                      envFrom:
+                        - secretRef:
+                            name: smartshop-credentials
+                        - secretRef:
+                            name: smartshop-mlflow-token
+                        - secretRef:
+                            name: hf-credentials
                       env:
-                        - name: HF_TOKEN
-                          valueFrom:
-                            secretKeyRef:
-                              name: hf-credentials
-                              key: token
+                        - name: HF_HOME
+                          value: "${HF_HOME}"
                         - name: S3_ENDPOINT
-                          value: "http://minio.smartshop.svc.cluster.local:9000"
+                          value: "${MINIO_ENDPOINT}"
+                        - name: AWS_ENDPOINT_URL_S3
+                          value: "${MINIO_ENDPOINT}"
+                        - name: AWS_DEFAULT_REGION
+                          value: "${AWS_DEFAULT_REGION}"
                         - name: NCCL_DEBUG
                           value: "INFO"
+                        - name: NCCL_IB_DISABLE
+                          value: "1"
+                      resources:
+                        requests:
+                          nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"
                       volumeMounts:
                         - name: shm
                           mountPath: /dev/shm
-                      resources:
-                        requests:
-                          nvidia.com/gpu: "4"
                   volumes:
                     - name: shm
                       emptyDir:
                         medium: Memory
                         sizeLimit: "32Gi"
-  # Kueue integration for Slurm dispatch
-  podSetOverrides:
-    - targetReplicatedJobs:
-        - worker
-      annotations:
-        kueue.x-k8s.io/queue-name: slurm-gpu-queue
+
+---
+# Kubeflow Trainer - LLM Fine-Tuning (FSDP on Slurm)
+apiVersion: trainer.kubeflow.org/v1alpha1
+kind: TrainJob
+metadata:
+  name: smartshop-llm-finetune
+  namespace: ${NAMESPACE}
+spec:
+  runtimeRef:
+    name: smartshop-llm-fsdp-slurm
+    kind: ClusterTrainingRuntime
+  trainer:
+    image: ${LLM_TRAINER_IMAGE}
+    command:
+      - torchrun
+    args:
+      - --nnodes=${LLM_TRAIN_NODES}
+      - --nproc_per_node=${LLM_GPUS_PER_NODE}
+      - training/llm/finetune.py
+      - --data-dir=s3://${S3_FEATURES_BUCKET}/llm_data
+      - --output-dir=s3://${S3_MODELS_BUCKET}/llm-adapter
+      - --model=${LLM_BASE_MODEL}
+      - --epochs=${LLM_TRAIN_EPOCHS}
+      - --batch-size=${LLM_TRAIN_BATCH_SIZE}
+      - --gradient-accumulation=${LLM_GRAD_ACCUM}
+    numNodes: ${LLM_TRAIN_NODES}
+    resourcesPerNode:
+      requests:
+        cpu: "16"
+        memory: "64Gi"
+        nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"
+      limits:
+        cpu: "32"
+        memory: "128Gi"
+        nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"

@@ -1,0 +1,366 @@
+---
+# Grafana — visualization layer for all SmartShop observability metrics.
+#
+# Datasources wired automatically via ConfigMap provisioning:
+#   - OCP Thanos (long-term Prometheus) — DCGM GPU, Redis, Spark metrics
+#   - MLflow REST API — not natively supported; use the mlflow-datasource plugin or notebook
+#
+# Pre-loaded dashboards (see grafana-dashboards ConfigMap below):
+#   1. GPU Performance (RAPIDS vs CPU) — DCGM utilization, memory, power, NVLink BW
+#   2. Redis Feature Store          — ops/sec, hit ratio, memory, connected clients
+#   3. Spark Executor Metrics       — heap, GC, shuffle (from PrometheusServlet)
+#
+# ACCESS:
+#   oc get route grafana -n smartshop
+#   Default login: admin / smartshop2026 (change after first login)
+#
+# APPLY:
+#   /bin/bash -c 'set -a; source .env; set +a; envsubst < infrastructure/openshift/grafana.yaml | oc apply -f -'
+#
+# NOTE: This uses the Grafana OSS image directly (no Grafana Operator required).
+# For production use, install the Grafana Operator from OperatorHub instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+    component: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+        component: observability
+    spec:
+      serviceAccountName: grafana-sa
+      containers:
+        - name: grafana
+          image: grafana/grafana:10.4.2
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "smartshop2026"
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Viewer"
+            - name: GF_PATHS_PROVISIONING
+              value: "/etc/grafana/provisioning"
+            # Allow unsigned plugins if installing mlflow-datasource
+            - name: GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS
+              value: "grafana-mlflow-datasource"
+          volumeMounts:
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: grafana-dashboards-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
+            - name: grafana-storage
+              mountPath: /var/lib/grafana/data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+        - name: grafana-dashboards-provisioning
+          configMap:
+            name: grafana-dashboards-provisioning
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: grafana-storage
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-sa
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+
+---
+# Allow Grafana SA to read Thanos metrics (required for cluster-level Prometheus query)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-thanos-reader-${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: grafana-sa
+    namespace: ${NAMESPACE}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: grafana
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+spec:
+  to:
+    kind: Service
+    name: grafana
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# Datasources — Thanos (OCP Prometheus) auto-auth via Service Account token
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: OCP-Thanos
+        type: prometheus
+        uid: ocp-thanos
+        url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+        access: proxy
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          timeInterval: "15s"
+          tlsSkipVerify: true
+          httpHeaderName1: "Authorization"
+        secureJsonData:
+          httpHeaderValue1: "Bearer ${PROMETHEUS_TOKEN}"
+  - name: OCP-UserWorkload
+    type: prometheus
+    uid: ocp-uwm
+    url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092
+    access: proxy
+    jsonData:
+      httpMethod: POST
+      timeInterval: "15s"
+      tlsSkipVerify: true
+      httpHeaderName1: "Authorization"
+    secureJsonData:
+      httpHeaderValue1: "Bearer ${PROMETHEUS_TOKEN}"
+
+---
+# Dashboard provisioning config — tells Grafana where to find dashboard JSON files
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provisioning
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: smartshop
+        orgId: 1
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+# Dashboard JSON — SmartShop observability panels
+# Three dashboards: GPU Performance, Redis Feature Store, Spark Executor Metrics
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+data:
+  gpu-performance.json: |
+    {
+      "title": "SmartShop GPU Performance (RAPIDS vs CPU)",
+      "uid": "smartshop-gpu",
+      "refresh": "15s",
+      "time": {"from": "now-1h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "title": "GPU Utilization % (all GPUs)",
+          "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_GPU_UTIL",
+            "legendFormat": "GPU {{gpu}} @ {{Hostname}}"}]
+        },
+        {
+          "id": 2, "title": "GPU Framebuffer Memory Used (MB)",
+          "type": "timeseries", "gridPos": {"x":12,"y":0,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_FB_USED",
+            "legendFormat": "GPU {{gpu}} @ {{Hostname}}"}]
+        },
+        {
+          "id": 3, "title": "SM Active Ratio (0=idle, 1=fully loaded)",
+          "type": "timeseries", "gridPos": {"x":0,"y":8,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_PROF_GR_ENGINE_ACTIVE",
+            "legendFormat": "GPU {{gpu}}"}]
+        },
+        {
+          "id": 4, "title": "DRAM Active Ratio (memory bus)",
+          "type": "timeseries", "gridPos": {"x":12,"y":8,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_PROF_DRAM_ACTIVE",
+            "legendFormat": "GPU {{gpu}}"}]
+        },
+        {
+          "id": 5, "title": "NVLink Bandwidth (MB/s, rate 1m)",
+          "type": "timeseries", "gridPos": {"x":0,"y":16,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "rate(DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL[1m])",
+            "legendFormat": "GPU {{gpu}} NVLink"}]
+        },
+        {
+          "id": 6, "title": "GPU Power Usage (W)",
+          "type": "timeseries", "gridPos": {"x":12,"y":16,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_POWER_USAGE",
+            "legendFormat": "GPU {{gpu}}"}]
+        }
+      ]
+    }
+
+  redis-feature-store.json: |
+    {
+      "title": "SmartShop Redis Feature Store",
+      "uid": "smartshop-redis",
+      "refresh": "15s",
+      "time": {"from": "now-1h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "title": "Commands Processed / sec",
+          "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "rate(redis_commands_processed_total{namespace=\"${NAMESPACE}\"}[1m])",
+            "legendFormat": "ops/sec"}]
+        },
+        {
+          "id": 2, "title": "Cache Hit Ratio (Feast online reads)",
+          "type": "gauge",
+          "fieldConfig": {"defaults": {"min": 0, "max": 1, "unit": "percentunit",
+            "thresholds": {"steps": [{"color":"red","value":0},{"color":"yellow","value":0.8},{"color":"green","value":0.95}]}}},
+          "gridPos": {"x":12,"y":0,"w":6,"h":8},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "rate(redis_keyspace_hits_total{namespace=\"${NAMESPACE}\"}[5m]) / (rate(redis_keyspace_hits_total{namespace=\"${NAMESPACE}\"}[5m]) + rate(redis_keyspace_misses_total{namespace=\"${NAMESPACE}\"}[5m]))",
+            "legendFormat": "hit ratio"}]
+        },
+        {
+          "id": 3, "title": "Memory Used (MB)",
+          "type": "stat", "gridPos": {"x":18,"y":0,"w":6,"h":8},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "redis_memory_used_bytes{namespace=\"${NAMESPACE}\"} / 1048576",
+            "legendFormat": "MB"}]
+        },
+        {
+          "id": 4, "title": "Keys in DB (materialized features)",
+          "type": "stat", "gridPos": {"x":0,"y":8,"w":8,"h":6},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "redis_db_keys{namespace=\"${NAMESPACE}\"}",
+            "legendFormat": "keys"}]
+        },
+        {
+          "id": 5, "title": "Connected Clients",
+          "type": "stat", "gridPos": {"x":8,"y":8,"w":8,"h":6},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "redis_connected_clients{namespace=\"${NAMESPACE}\"}",
+            "legendFormat": "clients"}]
+        },
+        {
+          "id": 6, "title": "Instantaneous Ops/sec",
+          "type": "stat", "gridPos": {"x":16,"y":8,"w":8,"h":6},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "redis_instantaneous_ops_per_sec{namespace=\"${NAMESPACE}\"}",
+            "legendFormat": "ops/sec"}]
+        }
+      ]
+    }
+
+  spark-executor-metrics.json: |
+    {
+      "title": "SmartShop Spark Executor Metrics",
+      "uid": "smartshop-spark",
+      "refresh": "30s",
+      "time": {"from": "now-2h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "title": "Executor JVM Heap Used (bytes)",
+          "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "metrics_jvm_heap_used_bytes{namespace=\"${NAMESPACE}\"}",
+            "legendFormat": "{{executor_id}}"}]
+        },
+        {
+          "id": 2, "title": "GC Time (ms/min rate)",
+          "type": "timeseries", "gridPos": {"x":12,"y":0,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "rate(metrics_jvm_total_gc_time_ms{namespace=\"${NAMESPACE}\"}[1m])",
+            "legendFormat": "{{executor_id}} GC ms/s"}]
+        },
+        {
+          "id": 3, "title": "Shuffle Read Bytes/sec",
+          "type": "timeseries", "gridPos": {"x":0,"y":8,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "rate(metrics_executor_shuffleLocalBytesRead_total{namespace=\"${NAMESPACE}\"}[1m])",
+            "legendFormat": "{{executor_id}} local"}, {"datasource": "ocp-uwm",
+            "expr": "rate(metrics_executor_shuffleRemoteBytesRead_total{namespace=\"${NAMESPACE}\"}[1m])",
+            "legendFormat": "{{executor_id}} remote"}]
+        },
+        {
+          "id": 4, "title": "BlockManager Memory (RDD cache)",
+          "type": "timeseries", "gridPos": {"x":12,"y":8,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-uwm",
+            "expr": "metrics_BlockManager_memory_memUsed_MB{namespace=\"${NAMESPACE}\"}",
+            "legendFormat": "{{executor_id}} cache MB"}]
+        }
+      ]
+    }

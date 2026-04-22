@@ -1,0 +1,64 @@
+# feast-spark-executor — k8s:// distributed Spark executor image (CPU baseline)
+#
+# Extends feast-spark-server setup (UBI9/feature-server base) with:
+#   - /opt/spark/{bin,jars,python} symlinks so the k8s driver can find executor scripts
+#     (driver launches executor pods via /opt/spark/bin/spark-class)
+#   - Same pyspark 3.5.3 + S3A JARs + BFV patches as feast-spark-server
+#
+# This is the CPU BASELINE image — no RAPIDS, no GPU.
+# Used to benchmark: local[*] (single pod) vs k8s:// distributed workers (this image).
+# For GPU benchmark, see Containerfile.feast-spark-executor-rapids (extends this image).
+#
+# Key difference from Containerfile.feast-spark:
+#   feast-spark runs local[*] — executor binary never invoked.
+#   This image is for k8s:// executor pods — driver still uses feast-spark image.
+#
+# Build:
+#   oc start-build feast-spark-executor -n smartshop --follow
+
+FROM quay.io/feastdev/feature-server:0.62.0
+
+USER 0
+
+# Java 11 + FIPS disable (identical to Containerfile.feast-spark)
+RUN microdnf install -y java-11-openjdk-headless && microdnf clean all
+ENV JAVA_HOME=/usr/lib/jvm/jre-11
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+ENV JAVA_TOOL_OPTIONS="-Dcom.redhat.fips=false"
+
+# BFV bug patches — same 2 files as feast-spark (executor must have matching code)
+RUN FEAST_SITE=$(python3 -c 'import feast, os; print(os.path.dirname(feast.__file__))') && \
+    FORK="https://raw.githubusercontent.com/abhijeet-dhumal/feast/fix/bfv-both-bugs/sdk/python" && \
+    curl -fsSL -o "${FEAST_SITE}/infra/compute_engines/feature_builder.py" \
+      "${FORK}/feast/infra/compute_engines/feature_builder.py" && \
+    curl -fsSL -o "${FEAST_SITE}/infra/offline_stores/contrib/spark_offline_store/spark.py" \
+      "${FORK}/feast/infra/offline_stores/contrib/spark_offline_store/spark.py" && \
+    echo "Patch applied OK"
+
+# PySpark 3.5.3 (same pin as feast-spark — must match driver exactly)
+RUN pip install --no-cache-dir pyspark==3.5.3
+
+# S3A JARs — same versions as feast-spark (hadoop-aws 3.3.4 + SDK v1 bundle)
+RUN SPARK_JARS=$(python3 -c 'import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), "jars"))') && \
+    curl -fsSL -o "${SPARK_JARS}/hadoop-aws-3.3.4.jar" \
+      https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    curl -fsSL -o "${SPARK_JARS}/aws-java-sdk-bundle-1.12.367.jar" \
+      https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.367/aws-java-sdk-bundle-1.12.367.jar && \
+    echo "S3A JARs installed"
+
+# /opt/spark/bin symlink — k8s driver launches executors via /opt/spark/bin/spark-class.
+# pyspark pip install puts bin/ inside the package dir, not /opt/spark.
+# Symlinks make the pip-installed Spark distribution visible at the expected path.
+RUN PYSPARK_HOME=$(python3 -c 'import pyspark, os; print(os.path.dirname(pyspark.__file__))') && \
+    mkdir -p /opt/spark && \
+    ln -sf "${PYSPARK_HOME}/bin"    /opt/spark/bin    && \
+    ln -sf "${PYSPARK_HOME}/jars"   /opt/spark/jars   && \
+    ln -sf "${PYSPARK_HOME}/python" /opt/spark/python  && \
+    echo "SPARK_HOME symlinks → ${PYSPARK_HOME}"
+
+ENV SPARK_HOME=/opt/spark
+
+RUN mkdir -p /tmp/spark-events /tmp/spark-warehouse && \
+    chmod -R g+w /tmp/spark-events /tmp/spark-warehouse
+
+USER 1001

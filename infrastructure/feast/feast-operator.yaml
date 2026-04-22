@@ -1,26 +1,158 @@
 ---
-# Feast operator FeatureStore CR for OpenShift
-# Manages Feast server lifecycle, online/offline stores
-apiVersion: feast.dev/v1alpha1
+# infrastructure/feast/feast-operator.yaml — SUPERSEDED
+#
+# This was the original Feast deployment using DaskOfflineStore.
+# ACTIVE version: infrastructure/openshift/feast-operator.yaml (SparkOfflineStore + SparkComputeEngine)
+# Applied by: scripts/apply-all.sh phase_feast
+#
+# DO NOT APPLY THIS FILE. The Makefile setup-secrets target explicitly skips it.
+#
+# Kept for historical reference only.
+# ---
+# MinIO S3 credentials — injected into all Feast server pods.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-s3-credentials
+  namespace: smartshop
+stringData:
+  AWS_ACCESS_KEY_ID: "${MINIO_ACCESS_KEY}"
+  AWS_SECRET_ACCESS_KEY: "${MINIO_SECRET_KEY}"
+  AWS_ENDPOINT_URL_S3: "http://minio.smartshop.svc.cluster.local:9000"
+  AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION}"
+  AWS_S3_FORCE_PATH_STYLE: "true"
+---
+# Redis online store config.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-redis-secret
+  namespace: smartshop
+stringData:
+  redis: |
+    type: redis
+    connection_string: "redis.smartshop.svc.cluster.local:6379,password=${REDIS_PASSWORD}"
+---
+# PostgreSQL registry backend.
+# Feast SQL registry requires psycopg2-binary — pre-installed in the Feast server image.
+# Using ClusterIP directly (OVN-K DNS workaround — same fix as MLflow).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-registry-postgres-secret
+  namespace: smartshop
+stringData:
+  sql: |
+    registry_type: sql
+    path: postgresql+psycopg2://${PG_USER}:${PG_PASSWORD}@${PG_CLUSTERIP}:5432/${PG_DATABASE}
+    cache_mode: thread
+    cache_ttl_seconds: 60
+---
+# Spark offline store config — distributed materialization via Spark Operator on K8s.
+# The feast-smartshop-feast SA needs RBAC to create SparkApplications (see spark-rbac.yaml).
+# spark.kubernetes.container.image must contain pyspark + feast[spark] + hadoop-aws JAR.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-spark-config
+  namespace: smartshop
+stringData:
+  spark: |
+    type: spark
+    spark_master: k8s://https://kubernetes.default.svc:443
+    spark_app_name: feast-materialize
+    spark_conf:
+      spark.submit.deployMode: client
+      spark.kubernetes.container.image: ${SPARK_JOBS_IMAGE}
+      spark.kubernetes.namespace: smartshop
+      spark.kubernetes.authenticate.driver.serviceAccountName: feast-smartshop-feast
+      spark.executor.instances: "4"
+      spark.executor.cores: "2"
+      spark.executor.memory: ${SPARK_EXECUTOR_MEMORY}
+      spark.driver.memory: ${SPARK_DRIVER_MEMORY}
+      spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+      spark.hadoop.fs.s3a.access.key: "${MINIO_ACCESS_KEY}"
+      spark.hadoop.fs.s3a.secret.key: "${MINIO_SECRET_KEY}"
+      spark.hadoop.fs.s3a.path.style.access: "true"
+      spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      spark.hadoop.fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+---
+# FeatureStore CR — Standard Production topology (per production-deployment-topologies.md).
+#
+# Registry  : SQL (PostgreSQL) — concurrent-writer safe, required for Spark materialization
+# Offline   : Spark — distributed processing via Spark Operator on K8s (571M reviews)
+# Online    : Redis (password auth)
+# Sources   : SparkSource (s3a://) in features.py
+#
+# Ref: https://feast.dev/blog/scaling-feast-feature-server/
+#      https://github.com/ntkathole/feast/blob/prod_deploy/docs/how-to-guides/production-deployment-topologies.md
+apiVersion: feast.dev/v1
 kind: FeatureStore
 metadata:
   name: smartshop-feast
   namespace: smartshop
+  labels:
+    feature-store-ui: enabled
 spec:
   feastProject: smartshop
+
+  feastProjectDir:
+    git:
+      url: https://github.com/abhijeet-dhumal/prod-ml-demo.git
+      ref: refine-cluster-infra-setup
+      featureRepoPath: feast/feature_repo
+
   services:
+    # ---- Offline store (dask) ----
+    # dask reads Parquet from MinIO S3 in-memory — no dedicated PVC needed.
+    # For demo/sample dataset (~1M reviews) this is sufficient.
+    # Production path: SparkOfflineStore + SparkSource requires a custom Feast server
+    # image that ships pyspark; feastdev/feature-server does not include it.
     offlineStore:
       persistence:
         file:
-          path: s3://smartshop/feast/offline/
-          s3AdditionalKwargs:
-            endpoint_url: "http://minio.smartshop.svc.cluster.local:9000"
+          type: dask
+      server:
+        envFrom:
+          - secretRef:
+              name: feast-s3-credentials
+
+    # ---- Online store (Redis) ----
     onlineStore:
       persistence:
         store:
           type: redis
-          redis:
-            connectionString: "redis.smartshop.svc.cluster.local:6379"
+          secretRef:
+            name: feast-redis-secret
+      server:
+        envFrom:
+          - secretRef:
+              name: feast-s3-credentials
+
+    # ---- Registry (file / NFS PVC) ----
+    # Note: SQL registry (type: sql + psycopg2) and SparkOfflineStore (pyspark) both require
+    # packages not present in the RHOAI image (odh-feature-server-rhel9). The feast-registry-
+    # postgres-secret and feast-spark-config secrets exist for when a custom image is used.
+    # For now: file registry on a dedicated 1Gi NFS PVC (separate from smartshop-shared-storage
+    # to avoid NFS CSI double-mount in the same pod).
     registry:
       local:
-        path: s3://smartshop/feast/registry.db
+        persistence:
+          file:
+            path: registry.db
+            pvc:
+              create:
+                accessModes: [ReadWriteOnce]
+                storageClassName: nfs-csi
+                resources:
+                  requests:
+                    storage: 1Gi
+              mountPath: /feast-registry
+        server:
+          restAPI: true
+          envFrom:
+            - secretRef:
+                name: feast-s3-credentials
+
+    # ---- UI ----
+    ui: {}

@@ -1,0 +1,73 @@
+---
+# feast-spark-engine ConfigMap
+# Referenced by spec.batchEngine.configMapRef in the FeatureStore CR.
+# The operator injects this as batch_engine: {...} into feature_store.yaml.
+# type: spark.engine → SparkComputeEngine (runs SparkSession local[*] inside feast pod).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feast-spark-engine
+  namespace: ${NAMESPACE}
+data:
+  config: |
+    type: spark.engine
+    # 10 partitions → 10 concurrent Redis pipeline connections (prevents OOMKill at 512Mi-2Gi).
+    # 200 partitions caused Redis memory exhaustion during materialize.
+    partitions: 10
+    # local[*]: Spark runs in-process inside the feast pod JVM.
+    # k8s:// mode fails because the feast-server image lacks /opt/spark/bin/executor
+    # required by executor pods. Switch to k8s:// with a proper Spark base executor image.
+    spark.master: "local[*]"
+    spark.driver.memory: "8g"
+    spark.ui.enabled: "false"
+    spark.eventLog.enabled: "false"
+    spark.sql.session.timeZone: "UTC"
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
+    spark.sql.execution.arrow.pyspark.enabled: "true"
+    spark.sql.execution.arrow.fallback.enabled: "true"
+    spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+    spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+    spark.hadoop.fs.s3a.connection.maximum: "100"
+    spark.hadoop.fs.s3a.threads.max: "64"
+
+---
+# feast-spark-config Secret
+# Referenced by spec.services.offlineStore.persistence.store.secretRef.
+# Key name must match the offline store type: "spark".
+# Content is merged into feature_store.yaml under offline_store (excluding type).
+#
+# spark.master: local[*] — SparkSession runs in-process inside the feast pod.
+# EnvironmentVariableCredentialsProvider reads AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+# from the feast-s3-credentials envFrom (already mounted on all feast containers).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-spark-config
+  namespace: ${NAMESPACE}
+stringData:
+  spark: |
+    spark_conf:
+      spark.master: "local[*]"
+      spark.ui.enabled: "false"
+      spark.eventLog.enabled: "false"
+      spark.sql.session.timeZone: "UTC"
+      spark.sql.execution.arrow.pyspark.enabled: "true"
+      spark.sql.execution.arrow.fallback.enabled: "true"
+      spark.sql.shuffle.partitions: "200"
+      spark.default.parallelism: "200"
+      spark.driver.memory: "8g"
+      spark.executor.memory: "8g"
+      spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+      spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+      spark.hadoop.fs.s3a.path.style.access: "true"
+      spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+      spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+      spark.hadoop.fs.s3a.connection.maximum: "100"
+      spark.hadoop.fs.s3a.threads.max: "64"
+    staging_location: "s3://smartshop-features/feast-staging/"

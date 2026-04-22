@@ -10,14 +10,27 @@ Usage:
 """
 
 import argparse
+import time
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
+try:
+    from spark.utils.mlflow_metrics import SparkRunLogger
+except ImportError:
+    SparkRunLogger = None
+
 
 EMBEDDING_DIM = 384  # all-MiniLM-L6-v2 dimension
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def _metric(key, value, unit=""):
+    tag = f"[METRIC] {key}={value}"
+    if unit:
+        tag += f" {unit}"
+    print(tag)
 
 
 def create_spark_session(app_name: str = "SmartShop-Embeddings") -> SparkSession:
@@ -60,10 +73,19 @@ def main():
     )
     args = parser.parse_args()
 
+    job_start = time.time()
     spark = create_spark_session()
 
+    mlflow_logger = SparkRunLogger(spark, experiment="smartshop-embeddings") if SparkRunLogger else None
+    _run_ctx = mlflow_logger.start_run(run_name="embedding-generation") if mlflow_logger else None
+    if _run_ctx:
+        _run_ctx.__enter__()
+
     print(f"Reading reviews from {args.input}")
-    df = spark.read.parquet(args.input)
+    t = time.time()
+    # Support comma-separated S3 paths (Electronics, Books, Home_and_Kitchen shards)
+    input_paths = [p.strip() for p in args.input.split(",") if p.strip()]
+    df = spark.read.parquet(*input_paths)
 
     # Normalize columns
     if "asin" in df.columns and "parent_asin" not in df.columns:
@@ -112,12 +134,38 @@ def main():
         "event_timestamp",
     )
 
-    print("Writing embeddings...")
-    result.write.parquet(args.output, mode="overwrite")
+    _metric("model", EMBEDDING_MODEL)
+    _metric("embedding_dim", EMBEDDING_DIM)
 
-    print(f"Wrote {result.count():,} embeddings to {args.output}")
+    print("Writing embeddings...")
+    t_write = time.time()
+    result.write.mode("overwrite").parquet(args.output)
+
+    total_written = result.count()
+    job_elapsed = time.time() - job_start
+    write_elapsed = time.time() - t_write
+
+    _metric("total_embeddings", total_written)
+    _metric("write_elapsed_s", round(write_elapsed, 2), "s")
+    _metric("total_elapsed_s", round(job_elapsed, 2), "s")
+    _metric("throughput_embeddings_per_s", int(total_written / job_elapsed) if job_elapsed > 0 else 0, "embeddings/s")
+
+    if mlflow_logger:
+        mlflow_logger.log_metric("total_embeddings", total_written)
+        mlflow_logger.log_metric("total_elapsed_s", round(job_elapsed, 2))
+        mlflow_logger.finalize(output_path="/tmp/embedding_metrics.json")
+    if _run_ctx:
+        _run_ctx.__exit__(None, None, None)
+
+    print(
+        f"\n{'='*60}\n"
+        f"Embedding generation complete.\n"
+        f"  Total embeddings : {total_written:,}\n"
+        f"  Elapsed          : {job_elapsed:.1f}s\n"
+        f"  Output           : {args.output}\n"
+        f"{'='*60}"
+    )
     spark.stop()
-    print("Embedding generation complete.")
 
 
 if __name__ == "__main__":

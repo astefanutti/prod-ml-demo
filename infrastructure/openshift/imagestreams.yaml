@@ -1,0 +1,78 @@
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: spark-jobs
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true   # pods in this namespace can reference 'spark-jobs:latest' directly
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: spark-jobs-rapids
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: rec-trainer
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: llm-trainer
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: rec-server
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true
+---
+# feast-spark-server: feature-server:0.62.0 + pyspark==3.5.3 + hadoop-aws JARs + BFV patches
+# Used by FeatureStore CR for SparkOfflineStore + SparkComputeEngine (local[*] mode)
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: feast-spark-server
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true
+---
+# feast-spark-executor: feast-spark-server + /opt/spark symlinks (CPU baseline)
+# k8s:// distributed CPU baseline executor pods
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: feast-spark-executor
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true
+---
+# feast-spark-executor-rapids: feast-spark-executor + RAPIDS JAR + GPU discovery script
+# k8s:// GPU executor pods for RAPIDS benchmark comparison
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: feast-spark-executor-rapids
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true

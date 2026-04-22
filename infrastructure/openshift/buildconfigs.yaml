@@ -1,0 +1,312 @@
+---
+# BuildConfig — spark-jobs
+# Trigger: oc start-build spark-jobs -n ${NAMESPACE}
+# Output: pushed directly to ${REGISTRY}/smartshop-spark-jobs:latest via ${QUAY_PUSH_SECRET}
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: spark-jobs
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.spark
+      noCache: false
+      env:
+        - name: UV_CACHE_DIR
+          value: /tmp/uv-cache
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-spark-jobs:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — rec-trainer
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: rec-trainer
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.rec-trainer
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-rec-trainer:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — llm-trainer
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: llm-trainer
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.llm-trainer
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-llm-trainer:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "12Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — spark-jobs-rapids (RAPIDS JAR injection variant)
+# Note: ADD instruction fetches the JAR from Maven Central at build time (~850 MiB).
+# Trigger: oc start-build spark-jobs-rapids -n ${NAMESPACE}
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: spark-jobs-rapids
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.spark-rapids
+      noCache: false
+      env:
+        - name: UV_CACHE_DIR
+          value: /tmp/uv-cache
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-spark-jobs-rapids:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — feast-spark-server
+# Extends feature-server:0.62.0 with JDK 11 + pyspark==3.5.3 + hadoop-aws JARs.
+# JAVA_TOOL_OPTIONS=-Dcom.redhat.fips=false baked in (required on UBI9 for AWS SDK v1 signing).
+# Output: internal ImageStream (no Quay push needed — used within the namespace).
+# Trigger: oc start-build feast-spark-server -n ${NAMESPACE}
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: feast-spark-server
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+    contextDir: "."
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.feast-spark
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-feast-spark-server:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — feast-spark-executor (CPU baseline)
+# k8s:// executor pods — CPU only, no RAPIDS.
+# Use with feast-spark-engine-distributed.yaml ConfigMap.
+# Trigger: oc start-build feast-spark-executor -n ${NAMESPACE}
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: feast-spark-executor
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+    contextDir: "."
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.feast-spark-executor
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-feast-spark-executor:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "12Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — feast-spark-executor-rapids (GPU benchmark)
+# Extends feast-spark-executor with RAPIDS JAR + GPU discovery script.
+# Use with feast-spark-engine-rapids.yaml ConfigMap.
+# Must build AFTER feast-spark-executor is pushed to ${REGISTRY}.
+# Trigger: oc start-build feast-spark-executor-rapids -n ${NAMESPACE}
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: feast-spark-executor-rapids
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+    contextDir: "."
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.feast-spark-executor-rapids
+      noCache: false
+      buildArgs:
+        - name: REGISTRY
+          value: ${REGISTRY}
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-feast-spark-executor-rapids:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "12Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — feast-spark-executor-rapids
+# RAPIDS GPU variant of feast-spark-executor — extends it with RAPIDS JAR + GPU discovery script.
+# Used as executor pods when running Feast BFV with GPU acceleration (feast-spark-engine-rapids.yaml).
+# Trigger: oc start-build feast-spark-executor-rapids -n ${NAMESPACE} --follow
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: feast-spark-executor-rapids
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+    contextDir: "."
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.feast-spark-executor-rapids
+      buildArgs:
+        - name: REGISTRY
+          value: ${REGISTRY}
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-feast-spark-executor-rapids:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "12Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — rec-server (serving image)
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: rec-server
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.serving
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-rec-server:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2

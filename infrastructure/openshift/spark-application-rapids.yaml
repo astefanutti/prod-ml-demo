@@ -1,59 +1,158 @@
 ---
-# RAPIDS GPU-Accelerated Feature Engineering Job
-# Optional variant of smartshop-feature-engineering with GPU acceleration.
-# Requires GPU-equipped executor nodes with NVIDIA device plugin.
-# See docs/rapids.md for details.
+# RAPIDS GPU-Accelerated Feature Engineering
+#
+# HOW IT WORKS
+#   rapids-4-spark JAR is pre-placed in /opt/spark/jars/ (auto-loaded at startup).
+#   The SQLPlugin intercepts every DataFrame operation — groupBy/agg/join/count —
+#   and executes them on GPU instead of CPU. No code changes to feature_engineering.py.
+#
+# CLUSTER: 2 × A100-80GB nodes (8 GPUs each = 16 total)
+# IMAGE  : apache/spark:3.5.3 base + rapids-4-spark 26.02.2 (cuda12 JAR)
+# CUDA   : cluster runs CUDA 13.0; cuda12 JAR works via NVIDIA backward compat
+#
+# EXECUTOR COUNT GUIDE
+#   4  → default (safe for both 1M sample and full 571M dataset)
+#   8  → fills both nodes (4 × A100 each), use if ETL is on Summit critical path
+#   16 → all GPUs, only worth it for repeated full runs
+#   Set via: SPARK_EXECUTOR_INSTANCES=8 envsubst < ... | oc apply -f -
+#
+# WHAT GETS GPU-ACCELERATED (automatically, no code changes)
+#   ✓ groupBy + agg (avg, count, stddev, sum, countDistinct)
+#   ✓ join (user-item join with metadata)
+#   ✓ sort / shuffle
+#   ✗ UDFs, input_file_name(), Python-side sentence-transformers
+#     → embedding_generation.py still runs on the regular spark-jobs image (CPU/GPU via HF)
+#
+# RAPIDS IS NOT USED FOR
+#   text_preprocessing.py  — string tokenization, no SQL aggregation
+#   embedding_generation.py — sentence-transformers, runs on spark-jobs image
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
   name: smartshop-feature-engineering-rapids
-  namespace: smartshop
+  namespace: ${NAMESPACE}
 spec:
   type: Python
   pythonVersion: "3"
   mode: cluster
-  image: "quay.io/smartshop/spark-jobs-rapids:latest"
+  image: "${SPARK_RAPIDS_IMAGE}"
   imagePullPolicy: Always
   mainApplicationFile: "local:///opt/spark/work-dir/feature_engineering.py"
   arguments:
     - "--input"
-    - "s3a://smartshop/raw/"
+    - "s3a://${S3_RAW_BUCKET}/raw/reviews/Electronics/,s3a://${S3_RAW_BUCKET}/raw/reviews/Books/,s3a://${S3_RAW_BUCKET}/raw/reviews/Home_and_Kitchen/"
     - "--output"
-    - "s3a://smartshop/features/"
+    - "s3a://${S3_FEATURES_BUCKET}/"
     - "--metadata-input"
-    - "s3a://smartshop/raw/metadata/"
-  sparkVersion: "3.5.0"
+    - "s3a://${S3_RAW_BUCKET}/raw/metadata/"
+  sparkVersion: "3.5.3"
   restartPolicy:
     type: OnFailure
     onFailureRetries: 2
     onFailureRetryInterval: 30
   hadoopConf:
-    fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
-    fs.s3a.access.key: "minioadmin"
-    fs.s3a.secret.key: "minioadmin"
+    fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
     fs.s3a.path.style.access: "true"
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    # EnvironmentVariableCredentialsProvider was removed in hadoop-aws 3.3.x;
+    # use the AWS SDK class directly (reads AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from env)
+    fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    fs.s3a.metadatastore.impl: "org.apache.hadoop.fs.s3a.s3guard.NullMetadataStore"
   sparkConf:
-    # RAPIDS Accelerator
+    # RAPIDS Accelerator — plugin JAR pre-placed in /opt/spark/jars/ by the Containerfile
     spark.plugins: "com.nvidia.spark.SQLPlugin"
     spark.rapids.sql.enabled: "true"
     spark.rapids.sql.concurrentGpuTasks: "2"
     spark.rapids.memory.pinnedPool.size: "2g"
+    spark.executor.memoryOverhead: "6g"
     # GPU resource allocation
     spark.executor.resource.gpu.amount: "1"
+    spark.executor.resource.gpu.vendor: "nvidia.com"
     spark.task.resource.gpu.amount: "0.5"
-    spark.executor.resource.gpu.discoveryScript: "/opt/spark/getGpusResources.sh"
-    # Tuning for GPU execution
+    # /opt/spark/getGpusResources.sh has 0644 in current image (ADD creates non-executable files)
+    # Fixed in Containerfile with chmod+x; until rebuilt, mount from ConfigMap with 0755.
+    spark.executor.resource.gpu.discoveryScript: "/tmp/getGpusResources.sh"
+    # JAR loaded via spark.jars from MinIO (workaround for 0600 permissions on image-baked JAR)
+    # After image rebuild with chmod fix, these can revert to local:// references.
+    # All JARs served from MinIO — no Maven download, works air-gapped.
+    # rapids-4-spark-cuda13.jar: cluster runs CUDA 13.0; cuda12 variant JNI can't find
+    # libcudart.so.12, so we use the cuda13 variant explicitly.
+    spark.jars: "http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/rapids-4-spark-cuda13.jar"
+    # Adaptive query execution for GPU execution
     spark.sql.files.maxPartitionBytes: "512m"
     spark.sql.adaptive.enabled: "true"
+    # ── Observability ──────────────────────────────────────────────────────────
+    # Log which DataFrame ops ran on GPU vs fell back to CPU (driver stdout)
+    spark.rapids.sql.explain: "ALL"
+    # Per-task GPU time in Spark UI Task tab + MLflow (gpuTimeNs, etc.)
+    spark.rapids.sql.metrics.level: "DEBUG"
+    # Built-in Prometheus endpoint on driver/executor :4040/metrics/prometheus
+    spark.ui.prometheus.enabled: "true"
+    # Capture per-executor CPU process tree (rss, vmem) for memory comparison
+    spark.executor.processTreeMetrics.enabled: "true"
+    # Metrics config file (mounted from spark-metrics-config ConfigMap)
+    spark.metrics.conf: "/etc/spark-metrics/metrics.properties"
+    # Spark History Server — event logs written to MinIO s3a://
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "s3a://smartshop-spark-logs/events"
+    spark.eventLog.compress: "true"
   driver:
-    cores: 2
-    memory: "4g"
-    serviceAccount: spark-operator
+    cores: ${SPARK_DRIVER_CORES:-2}
+    memory: "${SPARK_DRIVER_MEMORY:-4g}"
+    serviceAccount: spark
+    javaOptions: "-Duser.dir=/tmp"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
+      - secretRef:
+          name: smartshop-mlflow-token
+    volumeMounts:
+      - name: spark-metrics-config
+        mountPath: /etc/spark-metrics
+      - name: feature-engineering-script
+        mountPath: /opt/spark/work-dir/feature_engineering.py
+        subPath: feature_engineering.py
+      - name: mlflow-metrics-script
+        mountPath: /opt/spark/work-dir/utils/mlflow_metrics.py
+        subPath: mlflow_metrics.py
   executor:
-    cores: 4
-    instances: 4
-    memory: "8g"
+    cores: ${SPARK_EXECUTOR_CORES:-4}
+    instances: ${SPARK_EXECUTOR_INSTANCES:-4}
+    memory: "${SPARK_EXECUTOR_MEMORY:-8g}"
+    javaOptions: "-Duser.dir=/tmp"
     gpu:
       name: "nvidia.com/gpu"
       quantity: 1
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
+      - secretRef:
+          name: smartshop-mlflow-token
+    volumeMounts:
+      - name: spark-metrics-config
+        mountPath: /etc/spark-metrics
+      - name: feature-engineering-script
+        mountPath: /opt/spark/work-dir/feature_engineering.py
+        subPath: feature_engineering.py
+      - name: mlflow-metrics-script
+        mountPath: /opt/spark/work-dir/utils/mlflow_metrics.py
+        subPath: mlflow_metrics.py
+      - name: gpu-discovery-script
+        mountPath: /tmp/getGpusResources.sh
+        subPath: getGpusResources.sh
+  volumes:
+    - name: spark-metrics-config
+      configMap:
+        name: spark-metrics-config
+    - name: feature-engineering-script
+      configMap:
+        name: smartshop-feature-engineering-script
+        defaultMode: 0644
+    - name: mlflow-metrics-script
+      configMap:
+        name: spark-mlflow-metrics-script
+        defaultMode: 0644
+    - name: gpu-discovery-script
+      configMap:
+        name: smartshop-gpu-discovery-script
+        defaultMode: 0755

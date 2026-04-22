@@ -1,124 +1,114 @@
 """Download Amazon Reviews 2023 dataset from HuggingFace.
 
-Supports downloading a small sample (~1M reviews) for local testing
-or the full dataset (~233M reviews) for production runs.
+Streams JSONL directly from the Hub using the `json` dataset type — no local cache
+of the full category file (Electronics alone is ~22GB). Only the rows we need land
+on disk as Parquet.
+
+File layout in McAuley-Lab/Amazon-Reviews-2023:
+  raw/review_categories/{Category}.jsonl       ← reviews (streamed)
+  raw_meta_{Category}/full-*.parquet           ← metadata (Parquet shards, much smaller)
 
 Usage:
-    python data/download.py --mode sample   # ~1M reviews, ~500MB
-    python data/download.py --mode full     # Full dataset, ~49GB
+    python data/download.py --mode sample   # ~333K reviews per category, ~500MB total
+    python data/download.py --mode full     # Full category files (49GB+, needs cluster)
 """
 
 import argparse
 import os
 from pathlib import Path
 
+import pandas as pd
 from datasets import load_dataset
 
-# Categories to include (balances scale with diversity)
+DATASET_NAME = "McAuley-Lab/Amazon-Reviews-2023"
+HF_TOKEN = os.environ.get("HF_TOKEN")
+
 CATEGORIES = [
     "Electronics",
     "Books",
     "Home_and_Kitchen",
 ]
 
-DATASET_NAME = "McAuley-Lab/Amazon-Reviews-2023"
 RAW_DIR = Path("data/raw")
 SAMPLE_DIR = Path("data/sample")
 
+SAMPLE_PER_CATEGORY = 333_334   # ~1M reviews total across 3 categories
+META_SAMPLE = 50_000
 
-def download_category(category: str, mode: str, output_dir: Path) -> Path:
-    """Download a single category of reviews."""
+
+def download_category(category: str, mode: str, output_dir: Path) -> None:
     print(f"Downloading {category} reviews ({mode} mode)...")
 
-    subset_name = f"raw_review_{category}"
+    hf_path = f"hf://datasets/{DATASET_NAME}/raw/review_categories/{category}.jsonl"
+
     if mode == "sample":
+        # Stream line-by-line — no full file download, stays memory-efficient
         ds = load_dataset(
-            DATASET_NAME,
-            subset_name,
+            "json",
+            data_files={"full": hf_path},
             split="full",
             streaming=True,
-            trust_remote_code=True,
+            token=HF_TOKEN,
         )
-        # Take first 333K per category (~1M total across 3 categories)
         rows = []
         for i, row in enumerate(ds):
-            if i >= 333_334:
+            if i >= SAMPLE_PER_CATEGORY:
                 break
             rows.append(row)
-
-        import pandas as pd
-
         df = pd.DataFrame(rows)
-        out_path = output_dir / f"{category}.parquet"
-        df.to_parquet(out_path, index=False)
-        print(f"  Saved {len(df)} reviews to {out_path}")
     else:
+        # Full download — requires ~22GB free per category; use on cluster only
         ds = load_dataset(
-            DATASET_NAME,
-            subset_name,
+            "json",
+            data_files={"full": hf_path},
             split="full",
-            trust_remote_code=True,
+            token=HF_TOKEN,
         )
-        out_path = output_dir / f"{category}.parquet"
-        ds.to_parquet(out_path)
-        print(f"  Saved {len(ds)} reviews to {out_path}")
+        df = ds.to_pandas()
 
-    return out_path
+    out = output_dir / f"{category}.parquet"
+    df.to_parquet(out, index=False)
+    print(f"  Saved {len(df):,} reviews → {out}")
 
 
-def download_metadata(category: str, mode: str, output_dir: Path) -> Path:
-    """Download product metadata for a category."""
+def download_metadata(category: str, mode: str, output_dir: Path) -> None:
     print(f"Downloading {category} metadata ({mode} mode)...")
 
-    subset_name = f"raw_meta_{category}"
-    if mode == "sample":
-        ds = load_dataset(
-            DATASET_NAME,
-            subset_name,
-            split="full",
-            streaming=True,
-            trust_remote_code=True,
+    from huggingface_hub import hf_hub_download, list_repo_files
+
+    # Metadata already available as Parquet shards (much smaller than review JSONL)
+    all_files = list(list_repo_files(DATASET_NAME, repo_type="dataset", token=HF_TOKEN))
+    shards = sorted([
+        f for f in all_files
+        if f.startswith(f"raw_meta_{category}/") and f.endswith(".parquet")
+    ])
+
+    frames = []
+    collected = 0
+    for shard in shards:
+        local = hf_hub_download(
+            repo_id=DATASET_NAME, filename=shard,
+            repo_type="dataset", token=HF_TOKEN,
         )
-        rows = []
-        for i, row in enumerate(ds):
-            if i >= 50_000:
-                break
-            rows.append(row)
+        df = pd.read_parquet(local)
+        if mode == "sample":
+            remaining = META_SAMPLE - collected
+            df = df.head(remaining)
+        frames.append(df)
+        collected += len(df)
+        if mode == "sample" and collected >= META_SAMPLE:
+            break
 
-        import pandas as pd
-
-        df = pd.DataFrame(rows)
-        out_path = output_dir / f"{category}_meta.parquet"
-        df.to_parquet(out_path, index=False)
-        print(f"  Saved {len(df)} items to {out_path}")
-    else:
-        ds = load_dataset(
-            DATASET_NAME,
-            subset_name,
-            split="full",
-            trust_remote_code=True,
-        )
-        out_path = output_dir / f"{category}_meta.parquet"
-        ds.to_parquet(out_path)
-        print(f"  Saved {len(ds)} items to {out_path}")
-
-    return out_path
+    result = pd.concat(frames, ignore_index=True)
+    out = output_dir / f"{category}_meta.parquet"
+    result.to_parquet(out, index=False)
+    print(f"  Saved {len(result):,} items → {out}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Download Amazon Reviews 2023 dataset")
-    parser.add_argument(
-        "--mode",
-        choices=["sample", "full"],
-        default="sample",
-        help="Download mode: 'sample' (~1M reviews) or 'full' (~233M reviews)",
-    )
-    parser.add_argument(
-        "--categories",
-        nargs="+",
-        default=CATEGORIES,
-        help="Categories to download",
-    )
+    parser.add_argument("--mode", choices=["sample", "full"], default="sample")
+    parser.add_argument("--categories", nargs="+", default=CATEGORIES)
     args = parser.parse_args()
 
     output_dir = SAMPLE_DIR if args.mode == "sample" else RAW_DIR

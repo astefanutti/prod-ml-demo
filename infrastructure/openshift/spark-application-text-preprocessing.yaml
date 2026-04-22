@@ -1,0 +1,97 @@
+---
+# Text Preprocessing — produces LLM fine-tuning JSONL (train/val/test) from raw reviews.
+#
+# WHAT IT DOES
+#   1. Reads all parquet reviews from S3_RAW_BUCKET/raw/reviews/ (~109M rows)
+#   2. Cleans + deduplicates text (filter < 50 chars, drop user+text dupes)
+#   3. Builds two instruction-tuning formats per review:
+#      - Summarization prompt (title + review text → sentiment summary)
+#      - Q&A prompt (review text → product questions)
+#   4. Splits 90/5/5 into train/val/test JSONL shards
+#   5. Writes to S3_FEATURES_BUCKET/llm_data/{train,val,test}/
+#
+# METRICS (grep driver logs after completion)
+#   oc logs -n smartshop $(oc get pod -n smartshop -l "spark-role=driver,spark-app-name=smartshop-text-preprocessing" -o name) | grep METRIC
+#
+# USAGE
+#   set -a; source .env; set +a
+#   envsubst < infrastructure/openshift/spark-application-text-preprocessing.yaml | oc apply -f -
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: smartshop-text-preprocessing
+  namespace: ${NAMESPACE}
+spec:
+  type: Python
+  pythonVersion: "3"
+  mode: cluster
+  image: "${SPARK_RAPIDS_IMAGE}"   # apache/spark:3.5.3 base — has `driver` binary for cluster mode
+  imagePullPolicy: Always
+  mainApplicationFile: "local:///opt/spark/work-dir/text_preprocessing.py"
+  arguments:
+    - "--input"
+    - "s3a://${S3_RAW_BUCKET}/raw/reviews/Electronics/,s3a://${S3_RAW_BUCKET}/raw/reviews/Books/,s3a://${S3_RAW_BUCKET}/raw/reviews/Home_and_Kitchen/"
+    - "--output"
+    - "s3a://${S3_FEATURES_BUCKET}/llm_data/"
+  sparkVersion: "3.5.3"
+  restartPolicy:
+    type: Never
+  hadoopConf:
+    fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    fs.s3a.path.style.access: "true"
+    fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    fs.s3a.metadatastore.impl: "org.apache.hadoop.fs.s3a.s3guard.NullMetadataStore"
+  sparkConf:
+    spark.sql.adaptive.enabled: "true"
+    spark.sql.shuffle.partitions: "400"
+    spark.jars: "http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
+    spark.ui.prometheus.enabled: "true"
+    spark.executor.processTreeMetrics.enabled: "true"
+    spark.metrics.conf: "/etc/spark-metrics/metrics.properties"
+    # Spark History Server — event logs written to MinIO s3a://
+    spark.eventLog.enabled: "true"
+    spark.eventLog.dir: "s3a://smartshop-spark-logs/events"
+    spark.eventLog.compress: "true"
+    # Large shuffle for dedup (dropDuplicates across 109M rows)
+    spark.sql.shuffle.partitions: "600"
+  driver:
+    cores: ${SPARK_DRIVER_CORES:-2}
+    memory: "${SPARK_DRIVER_MEMORY:-4g}"
+    serviceAccount: spark
+    javaOptions: "-Duser.dir=/tmp"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
+      - secretRef:
+          name: smartshop-mlflow-token
+    volumeMounts:
+      - name: spark-metrics-config
+        mountPath: /etc/spark-metrics
+      - name: text-preprocessing-script
+        mountPath: /opt/spark/work-dir/text_preprocessing.py
+        subPath: text_preprocessing.py
+  executor:
+    cores: ${SPARK_EXECUTOR_CORES:-4}
+    instances: ${SPARK_EXECUTOR_INSTANCES:-4}
+    memory: "${SPARK_EXECUTOR_MEMORY:-8g}"
+    javaOptions: "-Duser.dir=/tmp"
+    envFrom:
+      - secretRef:
+          name: smartshop-credentials
+      - secretRef:
+          name: smartshop-mlflow-token
+    volumeMounts:
+      - name: spark-metrics-config
+        mountPath: /etc/spark-metrics
+      - name: text-preprocessing-script
+        mountPath: /opt/spark/work-dir/text_preprocessing.py
+        subPath: text_preprocessing.py
+  volumes:
+    - name: spark-metrics-config
+      configMap:
+        name: spark-metrics-config
+    - name: text-preprocessing-script
+      configMap:
+        name: smartshop-text-preprocessing-script
+        defaultMode: 0644

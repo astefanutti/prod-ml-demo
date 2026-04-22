@@ -8,14 +8,16 @@ Usage (single GPU, testing):
 
 Usage (multi-node FSDP via torchrun):
     torchrun --nnodes=2 --nproc_per_node=4 training/llm/finetune.py \
-        --data-dir s3://smartshop/llm_data
+        --data-dir s3://smartshop-features/llm_data
 """
 
 import argparse
 import json
 import os
+import tempfile
 from pathlib import Path
 
+import fsspec
 import torch
 from datasets import Dataset as HFDataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
@@ -27,35 +29,52 @@ from transformers import (
 )
 from trl import SFTTrainer
 
+
+def _open_file(path: str):
+    """Open a file from local filesystem or S3 (transparently via fsspec)."""
+    return fsspec.open(path, "rt", encoding="utf-8")
+
 BASE_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 MAX_SEQ_LENGTH = 2048
 
 
 def load_jsonl_dataset(data_dir: str, split: str) -> HFDataset:
-    """Load JSONL instruction-tuning data into a HuggingFace Dataset."""
-    split_dir = Path(data_dir) / split
+    """Load JSONL instruction-tuning data from local path or S3 directory.
+
+    Handles:
+    - s3://bucket/path/split/  — Spark part-* output files on MinIO
+    - /local/path/split/       — local directory of .txt or part-* files
+    - /local/path/split.jsonl  — single JSONL file
+    """
+    split_path = data_dir.rstrip("/") + "/" + split
     texts = []
 
-    # Handle both single file and directory of part files (from Spark)
-    if split_dir.is_dir():
-        for f in sorted(split_dir.glob("*.txt")) + sorted(split_dir.glob("part-*")):
-            with open(f) as fh:
+    fs, _ = fsspec.core.url_to_fs(split_path)
+
+    if fs.exists(split_path) and fs.isdir(split_path):
+        entries = sorted(fs.ls(split_path, detail=False))
+        part_files = [e for e in entries if
+                      os.path.basename(e).startswith("part-") or
+                      os.path.basename(e).endswith(".txt")]
+        for entry in part_files:
+            with fs.open(entry, "rt", encoding="utf-8") as fh:
                 for line in fh:
                     line = line.strip()
                     if line:
                         texts.append(line)
-    elif split_dir.with_suffix(".jsonl").exists():
-        with open(split_dir.with_suffix(".jsonl")) as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    texts.append(line)
+    else:
+        jsonl_path = split_path + ".jsonl"
+        if fs.exists(jsonl_path):
+            with fs.open(jsonl_path, "rt", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        texts.append(line)
 
     records = []
     for text in texts:
         try:
-            record = json.loads(text)
-            records.append(record)
+            records.append(json.loads(text))
         except json.JSONDecodeError:
             continue
 
@@ -191,11 +210,21 @@ def main():
     # Train
     trainer.train()
 
-    # Save LoRA adapter
+    # Save LoRA adapter — HF Trainer writes to local disk only.
+    # For S3 output paths, save locally then upload via fsspec.
     if rank == 0:
-        trainer.save_model(args.output_dir)
-        tokenizer.save_pretrained(args.output_dir)
-        print(f"LoRA adapter saved to {args.output_dir}")
+        is_s3 = args.output_dir.startswith("s3://")
+        local_dir = tempfile.mkdtemp(prefix="llm-adapter-") if is_s3 else args.output_dir
+
+        trainer.save_model(local_dir)
+        tokenizer.save_pretrained(local_dir)
+
+        if is_s3:
+            fs, _ = fsspec.core.url_to_fs(args.output_dir)
+            fs.put(local_dir, args.output_dir, recursive=True)
+            print(f"LoRA adapter uploaded to {args.output_dir}")
+        else:
+            print(f"LoRA adapter saved to {local_dir}")
 
 
 if __name__ == "__main__":

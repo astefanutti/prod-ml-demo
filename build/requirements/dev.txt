@@ -1,0 +1,41 @@
+# Local development — everything needed to run all components locally
+# pip install -r build/requirements/dev.txt
+#
+# Includes training + serving + spark + demo/notebook extras.
+# Not used in any container image.
+
+# --- core shared ---
+torch>=2.5.0
+pandas>=2.0.0
+pyarrow>=14.0.0
+fsspec>=2024.2.0
+s3fs>=2024.2.0
+transformers>=4.45.0
+sentence-transformers>=3.0.0
+requests>=2.32.0
+
+# --- training ---
+datasets>=3.0.0
+peft>=0.13.0
+trl>=0.12.0
+bitsandbytes>=0.44.0
+accelerate>=1.0.0
+sentencepiece>=0.2.0
+mlflow>=2.15.0
+
+# --- serving ---
+fastapi>=0.115.0
+uvicorn>=0.32.0
+feast[redis]>=0.60.0
+pymilvus>=2.4.0
+
+# --- spark (local mode) ---
+pyspark>=3.5.0
+
+# --- demo UI ---
+gradio>=5.0.0
+
+# --- notebooks / dev tools ---
+jupyter>=1.0.0
+ipykernel>=6.0.0
+matplotlib>=3.7.0

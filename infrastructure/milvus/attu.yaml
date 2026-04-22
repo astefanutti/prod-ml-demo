@@ -1,0 +1,71 @@
+---
+# Attu — Milvus web UI
+# Deploy standalone (separate from Helm release to avoid field manager conflicts)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attu
+  namespace: smartshop
+  labels:
+    app: attu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: attu
+  template:
+    metadata:
+      labels:
+        app: attu
+    spec:
+      containers:
+      - name: attu
+        image: zilliz/attu:v2.5.3
+        ports:
+        - containerPort: 3000
+        env:
+        - name: MILVUS_URL
+          value: "milvus.smartshop.svc.cluster.local:19530"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: attu
+  namespace: smartshop
+  labels:
+    app: attu
+spec:
+  selector:
+    app: attu
+  ports:
+  - port: 3000
+    targetPort: 3000
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: attu
+  namespace: smartshop
+spec:
+  to:
+    kind: Service
+    name: attu
+  port:
+    targetPort: 3000
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
