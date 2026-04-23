@@ -31,6 +31,6 @@ RUN curl -fsSL -o /opt/spark/jars/rapids-4-spark.jar \
 # Must match spark.executor.resource.gpu.discoveryScript in feast-spark-engine-rapids.yaml.
 ADD https://raw.githubusercontent.com/apache/spark/v3.5.3/examples/src/main/scripts/getGpusResources.sh \
     /opt/spark/getGpusResources.sh
-RUN chmod +x /opt/spark/getGpusResources.sh
+RUN chmod 755 /opt/spark/getGpusResources.sh
 
 USER 1001

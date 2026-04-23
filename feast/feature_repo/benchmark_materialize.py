@@ -32,16 +32,26 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--flush-redis",  action="store_true")
-parser.add_argument("--no-mlflow",    action="store_true")
-parser.add_argument("--event-log",    action="store_true",
-                    help="Enable spark.eventLog so this run appears in Spark History Server")
-parser.add_argument("--rapids-s",     type=float, default=0,
-                    help="RAPIDS SparkApp elapsed seconds for comparison (0 = skip)")
-parser.add_argument("--cpu-s",        type=float, default=0,
-                    help="CPU SparkApp elapsed seconds for comparison (0 = skip)")
-args = parser.parse_args()
+# Guard: Feast CLI imports all .py files in the feature_repo to discover feature
+# definitions. If parse_args() runs at module level it intercepts sys.argv and
+# breaks `feast apply` / `feast materialize`. Always guard with __name__ check.
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--flush-redis",  action="store_true")
+    parser.add_argument("--no-mlflow",    action="store_true")
+    parser.add_argument("--event-log",    action="store_true",
+                        help="Enable spark.eventLog so this run appears in Spark History Server")
+    parser.add_argument("--rapids-s",     type=float, default=0,
+                        help="RAPIDS SparkApp elapsed seconds for comparison (0 = skip)")
+    parser.add_argument("--cpu-s",        type=float, default=0,
+                        help="CPU SparkApp elapsed seconds for comparison (0 = skip)")
+    args = parser.parse_args()
+else:
+    # Imported by feast CLI during repo scan — provide safe defaults.
+    import types
+    args = types.SimpleNamespace(
+        flush_redis=False, no_mlflow=True, event_log=False, rapids_s=0, cpu_s=0
+    )
 
 FEATURE_REPO  = "/feast-data/smartshop/feast/feature_repo"
 REDIS_HOST    = "redis.smartshop.svc.cluster.local"

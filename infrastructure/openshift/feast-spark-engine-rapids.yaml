@@ -33,23 +33,43 @@ data:
     spark.submit.deployMode: "client"
     spark.driver.memory: "8g"
     spark.executor.instances: "4"
-    spark.executor.memory: "8g"
-    spark.executor.cores: "4"
+    spark.executor.memory: "14g"
+    spark.executor.memoryOverhead: "4g"
+    spark.executor.cores: "2"
 
-    # RAPIDS GPU plugin
+    # RAPIDS GPU plugin — transparent acceleration, no Spark GPU resource scheduling.
+    # The RAPIDS JAR is pre-installed in both the driver (feast-spark-server) and executor
+    # (feast-spark-executor-rapids) images. No spark.jars needed — avoids the 470MB
+    # MinIO download race condition where executor pods connect before the download completes.
+    # RAPIDS uses the first available CUDA GPU on each executor node automatically.
+    # Driver runs in CPU fallback mode (feast-spark-server has no GPU).
     spark.plugins: "com.nvidia.spark.SQLPlugin"
     spark.rapids.sql.enabled: "true"
     spark.rapids.sql.concurrentGpuTasks: "2"
-    spark.executor.resource.gpu.amount: "1"
-    spark.executor.resource.gpu.vendor: "nvidia.com/gpu"
-    spark.executor.resource.gpu.discoveryScript: "/opt/spark/getGpusResources.sh"
 
     # Executor pod image — feast-spark-executor-rapids (CPU executor + RAPIDS JAR on top)
-    spark.kubernetes.container.image: "${REGISTRY}/smartshop-feast-spark-executor-rapids:latest"
+    # Sourced from: FEAST_EXECUTOR_RAPIDS_IMAGE in .env
+    spark.kubernetes.container.image: "${FEAST_EXECUTOR_RAPIDS_IMAGE}"
+    spark.kubernetes.container.image.pullPolicy: "Always"
     spark.kubernetes.authenticate.driver.serviceAccountName: "spark"
     spark.kubernetes.namespace: "${NAMESPACE}"
 
-    # Pass S3 creds and FIPS fix to executor pods
+    # Pin executor pods to GPU nodes (nvidia.com/gpu.present=true label)
+    # Without this, pods land on CPU nodes where CUDA is unavailable → RAPIDS init fails.
+    spark.kubernetes.node.selector.nvidia.com/gpu.present: "true"
+
+    # Request 1 GPU per executor — NVIDIA Device Plugin injects CUDA device files into container.
+    # vendor=nvidia.com + resource-name=gpu → Kubernetes resource request: nvidia.com/gpu=1
+    spark.executor.resource.gpu.amount: "1"
+    spark.executor.resource.gpu.vendor: "nvidia.com"
+    spark.executor.resource.gpu.discoveryScript: "/opt/spark/getGpusResources.sh"
+    # 0.5 GPU per task → 2 tasks share 1 GPU per executor → 2×4 = 8 concurrent tasks.
+    # Matches CPU baseline concurrency (executor.cores=2 × 4 pods = 8 tasks).
+    # concurrentGpuTasks=2 above tells RAPIDS to schedule 2 GPU kernels simultaneously.
+    # Setting this to 1.0 would limit to 4 total tasks (half CPU parallelism) → unfair comparison.
+    spark.task.resource.gpu.amount: "0.5"
+
+    # Pass FIPS fix to executor pods
     spark.kubernetes.driverEnv.JAVA_TOOL_OPTIONS: "-Dcom.redhat.fips=false"
     spark.kubernetes.executorEnv.JAVA_TOOL_OPTIONS: "-Dcom.redhat.fips=false"
 
@@ -57,15 +77,30 @@ data:
     spark.eventLog.enabled: "true"
     spark.eventLog.dir: "s3a://smartshop-features/spark-events/"
     spark.sql.session.timeZone: "UTC"
-    spark.sql.shuffle.partitions: "200"
-    spark.default.parallelism: "200"
+    spark.sql.shuffle.partitions: "400"
+    spark.default.parallelism: "400"
     spark.sql.execution.arrow.pyspark.enabled: "true"
     spark.sql.execution.arrow.fallback.enabled: "true"
     spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
     spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
     spark.hadoop.fs.s3a.path.style.access: "true"
     spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
     spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
     spark.hadoop.fs.s3a.connection.maximum: "100"
     spark.hadoop.fs.s3a.threads.max: "64"
+    # Driver reachability: bind all interfaces, advertise via stable k8s service FQDN
+    spark.driver.bindAddress: "0.0.0.0"
+    spark.driver.host: "feast-spark-driver.${NAMESPACE}.svc.cluster.local"
+    spark.driver.port: "7078"
+    spark.driver.blockManager.port: "7079"
+    spark.executor.maxNumFailures: "4"
+    spark.task.maxFailures: "4"
+    # Allow executor pods extra time to register (large image pull ~47s on cold nodes)
+    spark.network.timeout: "600s"
+    spark.executor.heartbeatInterval: "60s"
+    spark.kubernetes.executor.missingPodDetectDelta: "120s"
+    spark.kubernetes.executor.api.pollingInterval: "5000"
+    # Static MinIO credentials broadcast via Hadoop conf to executor pods
+    spark.hadoop.fs.s3a.access.key: "minio"
+    spark.hadoop.fs.s3a.secret.key: "minio123"

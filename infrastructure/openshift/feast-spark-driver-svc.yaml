@@ -1,0 +1,46 @@
+---
+# feast-spark-driver Service
+#
+# CRITICAL — required for k8s:// distributed Feast materialization.
+#
+# When spark.master=k8s://, the Feast pod acts as the Spark *driver* (client mode).
+# The driver JVM binds to port 7078 (RPC) and 7079 (BlockManager) inside the pod.
+# Executor pods need a stable DNS name to call back to the driver — they cannot use
+# the raw pod hostname because it is not registered in cluster DNS.
+#
+# This ClusterIP Service pins a stable FQDN:
+#   feast-spark-driver.smartshop.svc.cluster.local:7078
+# which is what spark.driver.host is set to in feast-spark-engine-cpu/rapids.yaml.
+#
+# Without this Service:
+#   java.io.IOException: Failed to connect to feast-smartshop-feast-<hash>:7078
+#   → executors register and immediately disconnect → "Spark context stopped"
+#
+# Selector:
+#   The Feast Operator creates the pod with label feast.dev/name=smartshop-feast.
+#   (NOT app=feast-smartshop-feast — that label does NOT exist on the pod.)
+#
+# Apply:
+#   oc apply -f infrastructure/openshift/feast-spark-driver-svc.yaml
+#   (idempotent — safe to re-apply at any time)
+apiVersion: v1
+kind: Service
+metadata:
+  name: feast-spark-driver
+  namespace: smartshop
+  labels:
+    app: smartshop
+    component: feast-spark-driver
+spec:
+  type: ClusterIP
+  selector:
+    feast.dev/name: smartshop-feast   # label set by the Feast Operator on all feast pods
+  ports:
+  - name: driver-rpc
+    port: 7078
+    targetPort: 7078
+    protocol: TCP
+  - name: block-manager
+    port: 7079
+    targetPort: 7079
+    protocol: TCP

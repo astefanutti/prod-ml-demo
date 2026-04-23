@@ -46,34 +46,35 @@ review = Entity(
 )
 
 # ---------------------------------------------------------------------------
-# Raw source — all three category parquet files in one directory.
-# SparkComputeEngine reads with spark.read.format("parquet").load(path),
-# which picks up Books.parquet, Electronics.parquet, Home_and_Kitchen.parquet.
-# The timestamp_field "timestamp" is Unix-ms BIGINT in the raw schema.
-# Use `feast materialize 2010-01-01T00:00:00 <now>` for initial run to
-# cover all historical review timestamps.
+# Raw source — reads all parquet files under raw/reviews/ directly.
+# `query=` does an inline CAST(timestamp / 1000 AS TIMESTAMP) so Feast's
+# SQL time-range filter works without any separate preprocessing step.
+# Covers all 29.6 GB / 282 files in the raw dataset.
 # ---------------------------------------------------------------------------
 
 raw_reviews_source = SparkSource(
     name="raw_reviews_source",
-    # Path to processed reviews — same data as raw/reviews/*.parquet but with an added
-    # `event_timestamp TIMESTAMP` column (derived from `timestamp BIGINT / 1000`).
-    # Required because Feast's SparkOfflineStore SQL filter compares the timestamp_field
-    # against TIMESTAMP literals; raw data has BIGINT Unix-ms which causes
-    # DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES at analysis time.
-    # One-time preprocessing: preprocess_reviews.py in feast pod writes to this path.
-    path="s3a://smartshop-raw/processed/reviews/",
-    file_format="parquet",
+    # Read raw data directly — no preprocessing script needed.
+    # The raw `timestamp` column is Unix-ms BIGINT; Feast's SQL filter expects TIMESTAMP.
+    # Inline cast via `query=` avoids DATATYPE_MISMATCH.BINARY_OP_DIFF_TYPES.
+    # This covers all 29.6 GB / 282 files in raw/reviews/ without a separate ETL step.
+    # parquet.`path` in Spark SQL doesn't recurse into subdirectories.
+    # `raw/reviews/` has per-category subdirs (Books/, Electronics/, …).
+    # The glob `*/` makes Spark read all immediate subdirectory parquet files.
+    query=(
+        "SELECT *, CAST(timestamp / 1000 AS TIMESTAMP) AS event_timestamp "
+        "FROM parquet.`s3a://smartshop-raw/raw/reviews/*/`"
+    ),
     timestamp_field="event_timestamp",
 )
 
-# Embeddings are still read from pre-computed Parquet (separate embedding job).
-review_embeddings_source = SparkSource(
-    name="review_embeddings_source",
-    path="s3a://smartshop-embeddings/review_embeddings/",
-    file_format="parquet",
-    timestamp_field="event_timestamp",
-)
+# Embeddings source — disabled until embedding job populates review_embeddings/
+# review_embeddings_source = SparkSource(
+#     name="review_embeddings_source",
+#     path="s3a://smartshop-embeddings/review_embeddings/",
+#     file_format="parquet",
+#     timestamp_field="event_timestamp",
+# )
 
 # ---------------------------------------------------------------------------
 # @batch_feature_view — user_features

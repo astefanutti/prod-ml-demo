@@ -32,30 +32,49 @@ data:
     spark.submit.deployMode: "client"
     spark.driver.memory: "8g"
     spark.executor.instances: "4"
-    spark.executor.memory: "8g"
-    spark.executor.cores: "4"
+    spark.executor.memory: "14g"
+    spark.executor.memoryOverhead: "4g"
+    spark.executor.cores: "2"
 
-    # Executor pod image -- CPU only, no RAPIDS
-    spark.kubernetes.container.image: "${REGISTRY}/smartshop-feast-spark-executor:latest"
+    # Executor pod image — CPU only, no RAPIDS
+    # Sourced from: FEAST_EXECUTOR_IMAGE in .env
+    spark.kubernetes.container.image: "${FEAST_EXECUTOR_IMAGE}"
     spark.kubernetes.authenticate.driver.serviceAccountName: "spark"
     spark.kubernetes.namespace: "${NAMESPACE}"
 
     spark.kubernetes.driverEnv.JAVA_TOOL_OPTIONS: "-Dcom.redhat.fips=false"
     spark.kubernetes.executorEnv.JAVA_TOOL_OPTIONS: "-Dcom.redhat.fips=false"
 
+    # Driver reachability: bind all interfaces, advertise via stable k8s service FQDN.
+    # Without this, executors resolve the pod name (unresolvable) instead of the service.
+    spark.driver.bindAddress: "0.0.0.0"
+    spark.driver.host: "feast-spark-driver.${NAMESPACE}.svc.cluster.local"
+    spark.driver.port: "7078"
+    spark.driver.blockManager.port: "7079"
+
+    # Resilience settings — allow time for cold image pulls and executor registration
+    spark.network.timeout: "600s"
+    spark.executor.heartbeatInterval: "60s"
+    spark.kubernetes.executor.missingPodDetectDelta: "120s"
+    spark.kubernetes.executor.api.pollingInterval: "5000"
+    spark.executor.maxNumFailures: "4"
+    spark.task.maxFailures: "4"
+
     spark.ui.enabled: "false"
     spark.eventLog.enabled: "true"
     spark.eventLog.dir: "s3a://smartshop-features/spark-events/"
     spark.sql.session.timeZone: "UTC"
-    spark.sql.shuffle.partitions: "200"
-    spark.default.parallelism: "200"
+    spark.sql.shuffle.partitions: "400"
+    spark.default.parallelism: "400"
     spark.sql.execution.arrow.pyspark.enabled: "true"
     spark.sql.execution.arrow.fallback.enabled: "true"
     spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
     spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
     spark.hadoop.fs.s3a.path.style.access: "true"
     spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    spark.hadoop.fs.s3a.access.key: "minio"
+    spark.hadoop.fs.s3a.secret.key: "minio123"
     spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
     spark.hadoop.fs.s3a.connection.maximum: "100"
     spark.hadoop.fs.s3a.threads.max: "64"

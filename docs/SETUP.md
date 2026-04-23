@@ -235,19 +235,9 @@ make setup-secrets
 
 Go to **Operators → Installed Operators**, switch project to `redhat-ods-operator`, click **Red Hat OpenShift AI**.
 
-![RHOAI Operator installed](./assets/00-rhoai-operator-details.png)
-
 Click **Data Science Cluster** tab — confirm `default-dsc` shows **Phase: Ready**.
 
-![DataScienceCluster list showing default-dsc Ready](./assets/00-rhoai-dsc-list.png)
-
-Click `default-dsc` → scroll to **Conditions** — top-level conditions must all be `True`.
-
-![DSC top-level conditions](./assets/00-rhoai-dsc-details.png)
-
-Scroll further to see per-component conditions. `FeastOperatorReady`, `KserveReady`, `MLflowOperatorReady`, `ModelRegistryReady`, and `TrainerReady` must all be `True`.
-
-![DSC per-component conditions](./assets/00-rhoai-dsc-conditions.png)
+Click `default-dsc` → scroll to **Conditions** — top-level conditions must all be `True`. `FeastOperatorReady`, `KserveReady`, `MLflowOperatorReady`, `ModelRegistryReady`, and `TrainerReady` must all be `True`.
 
 Or verify via CLI:
 
@@ -283,21 +273,7 @@ This creates the `smartshop` namespace with:
 
 ### 3a — Install the Slinky Operator (OperatorHub)
 
-Go to **Operators → OperatorHub**, search for `slurm`. Select **Slurm Operator** (Community, Red Hat HPC Community).
-
-![Slurm Operator in OperatorHub catalog](./assets/02-slurm-operator-catalog.png)
-
-Click the tile to open the detail panel — confirm version `1.0.1-1`, channel `release-1.0`.
-
-![Slurm Operator detail panel](./assets/02-slurm-catalog-detail.png)
-
-Click **Install**. Leave all defaults (installs into `slinky` namespace, cluster-wide scope). Click **Install** to confirm.
-
-![Slurm Operator install form](./assets/02-slurm-install-form.png)
-
-Wait ~1 min until status shows **Succeeded**.
-
-![Slurm Operator installed successfully](./assets/02-slurm-installed.png)
+Go to **Operators → OperatorHub**, search for `slurm`. Select **Slurm Operator** (Community, Red Hat HPC Community). Click the tile to open the detail panel — confirm version `1.0.1-1`, channel `release-1.0`. Click **Install**. Leave all defaults (installs into `slinky` namespace, cluster-wide scope). Click **Install** to confirm. Wait ~1 min until status shows **Succeeded**.
 
 **Verify:**
 
@@ -345,9 +321,7 @@ oc exec -n slurm slurm-controller-0 -c slurmctld -- sinfo
 # all*          up   infinite      2   idle  slinky-[0-1]
 ```
 
-All four CRs (`Controller`, `NodeSet`, `LoginSet`, `RestApi`) visible in **Installed Operators → Slurm Operator → All Instances**:
-
-![Slurm all instances in OpenShift console](./assets/02-slurm-all-instances.png)
+All four CRs (`Controller`, `NodeSet`, `LoginSet`, `RestApi`) should be visible in **Installed Operators → Slurm Operator → All Instances**.
 
 ---
 
@@ -357,14 +331,6 @@ All four CRs (`Controller`, `NodeSet`, `LoginSet`, `RestApi`) visible in **Insta
 > - **Spark Helm Operator** — uses `gcr.io/kubebuilder/kube-rbac-proxy:v0.13.1` which no longer exists; install fails with `ImagePullBackOff`
 > - **Spark Application (Operator Backed)** — just a CR template, not an operator
 >
-> ![Spark operator search showing community tiles](./assets/03-spark-operator-search.png)
->
-> Selecting the community Helm Operator shows a "Community Operator" warning badge — and it will fail immediately if you proceed:
->
-> ![Spark Helm Operator catalog detail with Community badge](./assets/03-spark-community-operator-catalog.png)
->
-> ![Spark Helm Operator installation failed](./assets/03-spark-community-operator-failed.png)
->
 > RHOAI 3.4 includes a managed Spark Operator. Enable it via the DataScienceCluster — it's lifecycle-managed and integrates with the DSC health dashboard.
 
 **Via OpenShift Web Console:**
@@ -373,8 +339,6 @@ All four CRs (`Controller`, `NodeSet`, `LoginSet`, `RestApi`) visible in **Insta
 2. Click **Data Science Cluster → default-dsc → YAML**
 3. Find `spec.components.spark.managementState` and set it to `Managed`
 4. Click **Save**
-
-![DSC conditions showing SparkOperatorReady: True](./assets/00-rhoai-dsc-conditions-spark-enabled.png)
 
 **Verify (~2 min):**
 
@@ -500,13 +464,9 @@ oc get route minio-s3 -n smartshop -o jsonpath='{.spec.host}'
 make setup-secrets
 ```
 
-![S4 MinIO browser - Storage Management, no buckets yet](./assets/04-minio-s4-console.png)
-
 > **MinIO note:** Open-source MinIO is used here for simplicity. For production use
 > **ODF (OpenShift Data Foundation)** or **AIStor** (MinIO's enterprise successor).
 > AIStor is available in OperatorHub — search for `minio` in the Software Catalog.
->
-> ![MinIO AIStor operator detail](./assets/04-minio-aistor-detail.png)
 
 ---
 
@@ -1093,13 +1053,17 @@ oc get route mlflow -n redhat-ods-applications -o jsonpath='{.spec.host}'
 
 All images are built via OpenShift `BuildConfig` and pushed directly to `${REGISTRY}` using the `quay-push-secret` in the `smartshop` namespace.
 
-| Image | quay.io path | Built from |
-|---|---|---|
-| `smartshop-spark-jobs` | `${REGISTRY}/smartshop-spark-jobs:latest` | `build/Containerfile.spark` — UBI9/Python 3.12, PySpark + Feast |
-| `smartshop-spark-jobs-rapids` | `${REGISTRY}/smartshop-spark-jobs-rapids:latest` | `build/Containerfile.spark-rapids` — `apache/spark:3.5.3` + RAPIDS 26.02.2 JAR (cuda12) |
-| `smartshop-rec-trainer` | `${REGISTRY}/smartshop-rec-trainer:latest` | `build/Containerfile.rec-trainer` — UBI9/Python 3.12, PyTorch DDP |
-| `smartshop-llm-trainer` | `${REGISTRY}/smartshop-llm-trainer:latest` | `build/Containerfile.llm-trainer` — UBI9/Python 3.12, FSDP + QLoRA |
-| `smartshop-rec-server` | `${REGISTRY}/smartshop-rec-server:latest` | `build/Containerfile.serving` — UBI9/Python 3.12, FastAPI |
+| Image | `.env` variable | Containerfile | Used by |
+|---|---|---|---|
+| `smartshop-feast-spark-server` | `FEAST_SERVER_IMAGE` | `build/Containerfile.feast-spark-server` — `feature-server:0.62.0` + pyspark 3.5.3 + Java 11 + hadoop-aws JARs | Feast pod (offline, online, registry, ui containers) |
+| `smartshop-feast-spark-executor` | `FEAST_EXECUTOR_IMAGE` | `build/Containerfile.feast-spark-executor` — `apache/spark:3.5.3` + hadoop-aws JARs + `executor-entrypoint.sh` | Executor pods — CPU k8s:// runs (`feast-spark-engine-cpu.yaml`) |
+| `smartshop-feast-spark-executor-rapids` | `FEAST_EXECUTOR_RAPIDS_IMAGE` | `build/Containerfile.feast-spark-executor-rapids` — executor + RAPIDS 26.02.2 JAR (cuda12) | Executor pods — RAPIDS k8s:// runs (`feast-spark-engine-rapids.yaml`) |
+| `smartshop-spark-jobs` | `SPARK_JOBS_IMAGE` | `build/Containerfile.spark` — UBI9/Python 3.12, PySpark + Feast | SparkApplication ETL jobs |
+| `smartshop-spark-jobs-rapids` | `SPARK_RAPIDS_IMAGE` | `build/Containerfile.spark-rapids` — `apache/spark:3.5.3` + RAPIDS 26.02.2 JAR (cuda12) | RAPIDS GPU SparkApplication jobs |
+| `smartshop-rec-trainer` | `REC_TRAINER_IMAGE` | `build/Containerfile.rec-trainer` — UBI9/Python 3.12, PyTorch DDP | TrainJob — two-tower recommendation |
+| `smartshop-llm-trainer` | `LLM_TRAINER_IMAGE` | `build/Containerfile.llm-trainer` — UBI9/Python 3.12, FSDP + QLoRA | TrainJob — Mistral-7B fine-tuning via Slurm |
+| `smartshop-rec-server` | `REC_SERVER_IMAGE` | `build/Containerfile.serving` — UBI9/Python 3.12, FastAPI | KServe — recommendation endpoint |
+| `vllm/vllm-openai:v0.6.4` | `VLLM_IMAGE` | External — **not built here**; pin in `.env` before upgrade | KServe — LLM + RAG InferenceService containers |
 
 **Rebuild any image:**
 ```bash
@@ -1116,13 +1080,23 @@ make build-images
 make build-spark        # or build-rec / build-llm / build-serving / build-spark-rapids
 ```
 
-**`.env` image variables** (update these to use quay.io paths so manifests resolve outside the cluster):
+**`.env` image variables** — all images are set here; `envsubst` injects them into manifests:
+
 ```ini
-SPARK_JOBS_IMAGE=${REGISTRY}/smartshop-spark-jobs:latest
-SPARK_RAPIDS_IMAGE=${REGISTRY}/smartshop-spark-jobs-rapids:latest
-REC_TRAINER_IMAGE=${REGISTRY}/smartshop-rec-trainer:latest
-LLM_TRAINER_IMAGE=${REGISTRY}/smartshop-llm-trainer:latest
-REC_SERVER_IMAGE=${REGISTRY}/smartshop-rec-server:latest
+# Feast images (built via BuildConfig)
+FEAST_SERVER_IMAGE=quay.io/abdhumal/smartshop-feast-spark-server:latest
+FEAST_EXECUTOR_IMAGE=quay.io/abdhumal/smartshop-feast-spark-executor:latest
+FEAST_EXECUTOR_RAPIDS_IMAGE=quay.io/abdhumal/smartshop-feast-spark-executor-rapids:latest
+
+# Spark ETL + training
+SPARK_JOBS_IMAGE=quay.io/abdhumal/smartshop-spark-jobs:latest
+SPARK_RAPIDS_IMAGE=quay.io/abdhumal/smartshop-spark-jobs-rapids:latest
+REC_TRAINER_IMAGE=quay.io/abdhumal/smartshop-rec-trainer:latest
+LLM_TRAINER_IMAGE=quay.io/abdhumal/smartshop-llm-trainer:latest
+
+# Serving
+REC_SERVER_IMAGE=quay.io/abdhumal/smartshop-rec-server:latest
+VLLM_IMAGE=vllm/vllm-openai:v0.6.4   # external — pin before upgrading
 ```
 
 ---
@@ -1235,6 +1209,36 @@ Executor pods spin up per job — each gets ~12 GB RAM and the RAPIDS driver get
 
 ![Executor pods for rapids and cpu-baseline running with 12 GB memory each](./assets/openshift-spark-executor-pods.png)
 
+The RAPIDS driver pod appears as a separate running pod before executors are created:
+
+![OpenShift — RAPIDS driver pod running, waiting for executors to register](./assets/openshift-rapids-driver-running.png)
+
+Once the full stack (including Spark History Server) is deployed, the complete pod listing looks like this:
+
+![OpenShift — full stack with Spark History Server pod added to smartshop namespace](./assets/openshift-pods-with-history-server.png)
+
+**CPU executor startup logs** show Spark registering with the driver over `feast-spark-driver.smartshop.svc.cluster.local`:
+
+![CPU executor log — startup, registering with driver via ClusterIP Service](./assets/cpu-run-executor-log-startup.png)
+
+**CPU executor logs** mid-run show the distributed Parquet scan from MinIO:
+
+![CPU executor log — Parquet scan from s3a://smartshop-raw/processed/reviews/](./assets/cpu-run-executor-log-parquet-scan.png)
+
+**CPU run executor pods** — 4 executor pods (2 cores each, 14Gi RAM each):
+
+![oc get pods — 4 CPU executor pods running during feast materialize](./assets/cpu-run-oc-executor-pods.png)
+
+**RAPIDS executor startup logs** show RAPIDS memory pool initialization and task scheduling:
+
+![RAPIDS executor log — RAPIDS memory pool (76 GB) and task concurrency](./assets/rapids-run-executor-log-gpu-memory-pool.png)
+
+![RAPIDS executor log — RAPIDS SQL plugin active, GPU tasks scheduled](./assets/rapids-run-executor-log-rapids-tasks.png)
+
+**RAPIDS run executor pods** — same 4 pods but with GPU resource limit (`nvidia.com/gpu: 1`):
+
+![oc get pods — 4 RAPIDS executor pods running with GPU resource during feast materialize](./assets/rapids-run-oc-executor-pods.png)
+
 When the job completes, the following MinIO buckets will be populated with Parquet files:
 - `s3://smartshop-features/user_features/`
 - `s3://smartshop-features/item_features/`
@@ -1251,19 +1255,93 @@ Key observations to highlight during the demo:
 - **SM Active peaks** visible during user feature aggregation (~20:20) — the most compute-heavy stage
 - **GPU power** 80–100 W (vs 400 W TDP) — workload is I/O-bound waiting on MinIO reads
 
-Mid-run GPU memory spike:
+GPU activity in the early run phase (Parquet scan from MinIO):
+
+![Grafana — GPU activity early in the run, low utilization during I/O-bound Parquet scan](./assets/grafana-gpu-activity-early-run.png)
+
+GPU utilization at 30% with 75 GB VRAM occupied — typical mid-run steady state:
+
+![Grafana — RAPIDS GPU 30% utilization, 75 GB framebuffer in use](./assets/grafana-rapids-gpu-30pct-75gb-vram.png)
+
+GPU memory mid-run spike when all raw data is loaded into VRAM:
 
 ![Grafana — framebuffer memory spike to 75 GB at mid-run](./assets/grafana-gpu-memory-midrun-spike.png)
+
+![Grafana — framebuffer at 75 GB mid-run (zoomed)](./assets/grafana-rapids-midrun-gpu-memory-75gb.png)
+
+GPU burst phase — SM active peak during aggregation (most compute-heavy stage):
+
+![Grafana — RAPIDS GPU burst: SM active spike during groupBy aggregation](./assets/grafana-rapids-gpu-burst.png)
+
+GPU power + executor memory + Redis keys growing together (mid-run overview):
+
+![Grafana — GPU power, executor memory, Redis keys rising in lockstep mid-run](./assets/grafana-rapids-gpu-power-executor-redis.png)
+
+GPU power + Redis keys at 15M (half of expected 26.5M) — approximately 50% through materialization:
+
+![Grafana — GPU power stable, Redis keys at 15M (~50% through)](./assets/grafana-rapids-power-redis-15m-keys.png)
 
 Full run arc — memory rises, job completes, GPU released:
 
 ![Grafana — complete run timeline showing memory rise then drop to 0 at job completion](./assets/grafana-gpu-complete-run-timeline.png)
+
+RAPIDS full run timeline — GPU memory ramps up then drops cleanly to 0 after completion:
+
+![Grafana — RAPIDS full run from start to finish, memory curve and final release](./assets/grafana-rapids-gpu-full-run.png)
+
+GPU VRAM teardown — memory drops from 75 GB to 0 as executors are terminated:
+
+![Grafana — RAPIDS VRAM teardown: framebuffer drops from 75 GB to 0 at job end](./assets/grafana-rapids-gpu-vram-teardown.png)
+
+GPU memory fully released, executor pods terminated:
+
+![Grafana — RAPIDS completed: GPU memory released, all executor pods gone](./assets/grafana-rapids-completed-gpu-memory-released.png)
+
+**CPU run — Grafana executor + Redis metrics:**
+
+Full Grafana window during the CPU run (executor CPU, memory, Redis keys across full duration):
+
+![Grafana — full dashboard view during CPU run showing executor CPU/memory and Redis growth](./assets/grafana-full-dashboard-cpu-run.png)
+
+CPU executor memory stable at ~14Gi, Redis at 14M keys:
+
+![Grafana — CPU executor memory steady at 14Gi, Redis 14M keys](./assets/grafana-cpu-executor-mem-redis-14m-keys.png)
+
+Full CPU executor monitoring window (executor restarts visible, memory stable):
+
+![Grafana — CPU executor full monitoring window: memory, CPU, and restart events](./assets/grafana-cpu-executor-full-window.png)
+
+CPU vs RAPIDS combined executor + Redis dashboard (side-by-side):
+
+![Grafana — CPU and RAPIDS combined: executor CPU/memory + OOM events + Redis keys](./assets/grafana-executor-cpu-mem-oom-redis-both.png)
+
+**Redis key growth progression** during materialization:
+
+Redis at 5M keys (early stage, user_features writing):
+
+![Grafana — Redis keys at 5M, early materialization phase](./assets/grafana-executor-metrics-redis-5m-keys.png)
+
+Redis at 8M keys (mid user_features):
+
+![Grafana — Redis keys at 8M](./assets/grafana-executor-metrics-redis-8m-keys.png)
+
+Redis at 12M keys (item_features starting):
+
+![Grafana — Redis keys at 12M, item_features phase](./assets/grafana-executor-metrics-redis-12m-keys.png)
+
+Redis keys rising steeply — final write phase, approaching 26.5M:
+
+![Grafana — Redis keys curve rising toward 26.5M target](./assets/grafana-executor-metrics-redis-rising.png)
 
 **Spark History Server — completed runs:**
 
 Both completed runs are visible in the History Server at `https://spark-history-smartshop.${OC_CLUSTER_DOMAIN}`:
 
 ![Spark History Server showing CPU baseline 2.0h and RAPIDS 1.3h runs side by side](./assets/spark-history-both-runs-completed.png)
+
+RAPIDS run detail — completed in 1h 3m:
+
+![Spark History Server — RAPIDS run completed in 1h 3m](./assets/spark-history-rapids-completed-1h3m.png)
 
 All three SparkApplications (feature engineering RAPIDS, CPU baseline, text preprocessing) visible in History Server after completion:
 
@@ -1292,7 +1370,35 @@ oc exec -n smartshop $FEAST_POD -c offline -- bash -c '
 
 After materialization, verify features landed in Redis via RedisInsight and the Grafana Redis Feature Store dashboard:
 
+**RedisInsight — key growth mid-run** (13M keys, materialization in progress):
+
+![RedisInsight — 13M keys at mid-run, feast materialize in progress](./assets/redisinsight-13m-keys-midrun.png)
+
+**RedisInsight — final key count** (26,493,202 keys — both user_features and item_features complete):
+
+![RedisInsight — 26,493,202 keys final count after complete materialization](./assets/redisinsight-26m-keys-final.png)
+
+**RedisInsight — Browse: item_features HASH keys** with field data visible:
+
 ![RedisInsight — Browse: 3.1M item_id HASH keys after Feast BFV materialization](./assets/redisinsight-browse-item-features.png)
+
+**RedisInsight — key detail** showing HSET fields (feature names and serialized values):
+
+![RedisInsight — single key detail: HSET fields for a user_features entity](./assets/redisinsight-browse-key-detail.png)
+
+**RedisInsight — database analysis summary** (key type distribution, memory, top key patterns):
+
+![RedisInsight — analysis summary: 26M HASH keys, ~6.2 GB, smartshop:* namespace patterns](./assets/redisinsight-analyze-summary-clean.png)
+
+**RedisInsight — Slowlog** showing HSET burst pattern during materialization (expected):
+
+![RedisInsight — slowlog showing HSET burst commands during feast materialize](./assets/redisinsight-slowlog-hset-burst.png)
+
+![RedisInsight — slowlog commands list: HSET entries in sequence](./assets/redisinsight-slowlog-commands.png)
+
+![RedisInsight — HSET slowlog entry detail with duration and key pattern](./assets/redisinsight-hset-slowlog.png)
+
+**Grafana — Redis Feature Store dashboard** (post-materialization, serving traffic):
 
 ![Grafana — SmartShop Redis Feature Store: Commands/sec, 100% Cache Hit Ratio, 711 MB memory](./assets/grafana-redis-feature-store-working.png)
 

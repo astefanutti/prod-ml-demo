@@ -2,9 +2,10 @@
 #
 # Extends quay.io/feastdev/feature-server:0.62.0 (feast[minimal], Python 3.12, UBI9)
 # with:
-#   - Feast reinstalled from fork branch fix/bfv-both-bugs (2 upstream bug fixes):
-#       Bug 1: feature_builder.py — get_column_info() missing "python" mode guard
-#       Bug 2: spark.py — pull_all_from_table_or_query() missing SELECT * fallback
+#   - Feast patched from fork branch fix/bfv-python-mode-column-info (3 upstream bug fixes):
+#       Bug 1: feature_builder.py — get_column_info() missing "python" mode guard  (PR #6310)
+#       Bug 2: spark.py — pull_all_from_table_or_query() missing SELECT * fallback  (PR #6311)
+#       Bug 3: spark/utils.py — pre-create S3A event log dir before SparkContext    (PR #6317)
 #     PRs pending merge at https://github.com/feast-dev/feast
 #   - pyspark==3.5.3 and hadoop-aws JARs for s3a:// MinIO access
 #
@@ -38,19 +39,22 @@ ENV PATH="${JAVA_HOME}/bin:${PATH}"
 # (AWS SDK v1 request signing). Must be set before JVM starts, not via SparkConf.
 ENV JAVA_TOOL_OPTIONS="-Dcom.redhat.fips=false"
 
-# Patch only the two files containing BFV bug fixes.
+# Patch the three files containing BFV + S3A bug fixes.
 # This avoids reinstalling feast (which would replace the feast CLI entry point)
 # while still getting the fixed code into the installed site-packages.
-#   Bug 1: feature_builder.py — get_column_info() missing "python" mode guard
-#   Bug 2: spark.py — pull_all_from_table_or_query() missing SELECT * fallback
+#   Bug 1: feature_builder.py — get_column_info() missing "python" mode guard  (PR #6310)
+#   Bug 2: spark.py — pull_all_from_table_or_query() missing SELECT * fallback  (PR #6311)
+#   Bug 3: spark/utils.py — pre-create S3A event log dir before SparkContext    (PR #6317)
 # PRs pending merge at https://github.com/feast-dev/feast — remove this block once merged.
 RUN FEAST_SITE=$(python3 -c 'import feast, os; print(os.path.dirname(feast.__file__))') && \
     echo "Patching feast in ${FEAST_SITE}" && \
-    FORK="https://raw.githubusercontent.com/abhijeet-dhumal/feast/fix/bfv-both-bugs/sdk/python" && \
+    FORK="https://raw.githubusercontent.com/abhijeet-dhumal/feast/fix/bfv-python-mode-column-info/sdk/python" && \
     curl -fsSL -o "${FEAST_SITE}/infra/compute_engines/feature_builder.py" \
       "${FORK}/feast/infra/compute_engines/feature_builder.py" && \
     curl -fsSL -o "${FEAST_SITE}/infra/offline_stores/contrib/spark_offline_store/spark.py" \
       "${FORK}/feast/infra/offline_stores/contrib/spark_offline_store/spark.py" && \
+    curl -fsSL -o "${FEAST_SITE}/infra/compute_engines/spark/utils.py" \
+      "${FORK}/feast/infra/compute_engines/spark/utils.py" && \
     echo "Patch applied OK"
 
 # Install pyspark — pinned to 3.5.3 to match Hadoop 3.3.4 (AWS SDK v1 compatible)
@@ -66,6 +70,17 @@ RUN SPARK_JARS=$(python3 -c 'import pyspark, os; print(os.path.join(os.path.dirn
     curl -fsSL -o "${SPARK_JARS}/aws-java-sdk-bundle-1.12.367.jar" \
       https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.367/aws-java-sdk-bundle-1.12.367.jar && \
     echo "JAR sizes:" && ls -lh "${SPARK_JARS}/hadoop-aws-3.3.4.jar" "${SPARK_JARS}/aws-java-sdk-bundle-1.12.367.jar"
+
+# RAPIDS JAR on the DRIVER side — required for spark.plugins=com.nvidia.spark.SQLPlugin
+# Without this, spark.jars would download 470MB from MinIO at every Spark startup,
+# creating a race: executor pods connect before the download completes → "failed executor".
+# Driver initializes RAPIDS in CPU fallback mode (no GPU on feast-spark-server pod).
+# Executors (feast-spark-executor-rapids) have the same JAR pre-installed in the image.
+RUN SPARK_JARS=$(python3 -c 'import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), "jars"))') && \
+    curl -fsSL -o "${SPARK_JARS}/rapids-4-spark.jar" \
+      https://repo1.maven.org/maven2/com/nvidia/rapids-4-spark_2.12/26.02.2/rapids-4-spark_2.12-26.02.2-cuda13.jar && \
+    chmod 644 "${SPARK_JARS}/rapids-4-spark.jar" && \
+    echo "RAPIDS JAR: $(ls -lh ${SPARK_JARS}/rapids-4-spark.jar)"
 
 # Allow non-root user (1001) to write Spark temp dirs
 RUN mkdir -p /tmp/spark-events /tmp/spark-warehouse && \
