@@ -64,7 +64,7 @@ spec:
     maxReplicas: ${LLM_MAX_REPLICAS}
     containers:
       - name: vllm
-        image: vllm/vllm-openai:v0.6.4  # pinned; upgrade intentionally — latest can break CUDA/model compat
+        image: ${VLLM_IMAGE}  # pinned in .env; upgrade intentionally — latest can break CUDA/model compat
         args:
           - --model
           - ${LLM_BASE_MODEL}
