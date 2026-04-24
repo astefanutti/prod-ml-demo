@@ -1,48 +1,50 @@
 # feast-spark-executor-embeddings — k8s:// Spark executor for review_embeddings BFV
 #
-# Extends feast-spark-executor (CPU baseline) with:
-#   - sentence-transformers + tokenizers for all-MiniLM-L6-v2 pandas UDF
-#   - Pre-cached all-MiniLM-L6-v2 model weights baked into the image
-#     (avoids executor pods downloading ~90MB from HuggingFace Hub at runtime)
+# Extends feast-spark-executor-gpu with sentence-transformers for the _embed() pandas UDF
+# in the review_embeddings @batch_feature_view.
 #
-# Used by feature_store_milvus.yaml batch_engine when running:
-#   feast materialize-incremental ... --feature-views review_embeddings
+# GPU benefit (dual):
+#   1. RAPIDS plugin (inherited)   → GPU-accelerated Spark SQL/DataFrame ops
+#   2. sentence-transformers       → transformer inference runs on GPU via torch+CUDA
+#      all-MiniLM-L6-v2 throughput: ~50k samples/s (A100 GPU) vs ~1k/s (CPU)
+#      For 5M reviews: ~2 min GPU vs ~1.4 hr CPU
 #
-# The driver pod (feast-spark image) submits executor pods using this image.
-# Executors run the _embed() pandas UDF from review_embeddings @batch_feature_view.
+# torch is installed via sentence-transformers dependency resolution (no explicit
+# +cpu pin). At runtime, the NVIDIA device plugin mounts CUDA libraries from the host
+# so torch.cuda.is_available() returns True when the pod requests nvidia.com/gpu.
+#
+# Model weights (~90MB) are baked in at /opt/hf-cache to avoid per-executor downloads
+# at runtime (critical for air-gapped clusters and cold-start latency).
 #
 # Build:
 #   oc start-build feast-spark-executor-embeddings -n smartshop --follow
+#
+# Used by feature_store_milvus.yaml:
+#   spark.kubernetes.container.image: "${SPARK_EXECUTOR_EMBEDDINGS_IMAGE}"
 
 ARG REGISTRY
-FROM ${REGISTRY}/smartshop-feast-spark-executor:latest
+FROM ${REGISTRY}/smartshop-feast-spark-executor-gpu:latest
 
 USER 0
 
-# sentence-transformers pulls torch (CPU-only), transformers, tokenizers.
-# torch CPU wheel is ~200MB — significantly smaller than CUDA variant.
-# numpy pin avoids 1.x/2.x ABI incompatibility with pyspark arrow serialization.
-RUN pip install --no-cache-dir \
-      sentence-transformers==3.4.1 \
-      torch==2.6.0+cpu \
-      --extra-index-url https://download.pytorch.org/whl/cpu && \
-    echo "sentence-transformers $(python3 -c 'import sentence_transformers; print(sentence_transformers.__version__)')"
+# sentence-transformers pulls torch (CUDA-enabled) + tokenizers + transformers.
+# No explicit torch version pin — let sentence-transformers resolve the compatible version.
+# torch will auto-detect CUDA at runtime when the NVIDIA device plugin injects libraries.
+RUN pip install --no-cache-dir sentence-transformers==3.4.1 && \
+    echo "sentence-transformers $(python3 -c 'import sentence_transformers; print(sentence_transformers.__version__)')" && \
+    python3 -c "import torch; print('torch', torch.__version__, '| CUDA build:', torch.version.cuda)"
 
-# Pre-cache all-MiniLM-L6-v2 into the image.
-# Without this, every executor pod downloads ~90MB from huggingface.co on startup,
-# which adds 30-60s cold start and fails in air-gapped / egress-restricted clusters.
-# HF_HOME is set to /opt/hf-cache so the weights survive across /tmp resets.
-#
+# Pre-cache all-MiniLM-L6-v2 model weights into the image.
 # NOTE: do NOT use RUN python3 -c "from sentence_transformers ..." multi-line syntax.
-# Buildah's Dockerfile parser treats lines beginning with 'from' as FROM directives,
+# Buildah's Dockerfile parser treats lines starting with 'from' as FROM directives
 # even inside RUN string arguments. Write the snippet to a file and execute it instead.
 ENV HF_HOME=/opt/hf-cache
 ENV TRANSFORMERS_CACHE=/opt/hf-cache
 RUN printf 'import sentence_transformers as st\n\
 model = st.SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")\n\
 emb = model.encode(["test"])\n\
-assert len(emb[0]) == 384, "expected dim 384, got %d" %% len(emb[0])\n\
-print("Model cached and verified: dim=384")\n' > /tmp/cache_model.py \
+assert len(emb[0]) == 384, "expected dim 384, got %%d" %% len(emb[0])\n\
+print("Model cached OK: dim=384")\n' > /tmp/cache_model.py \
     && python3 /tmp/cache_model.py \
     && rm /tmp/cache_model.py \
     && chmod -R g+r /opt/hf-cache
