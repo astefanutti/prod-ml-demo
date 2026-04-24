@@ -128,6 +128,14 @@ spec:
         envFrom:
           - secretRef:
               name: feast-s3-credentials
+        # MY_POD_IP is required when running feast materialize with k8s:// Spark master
+        # (feature_store_milvus.yaml batch_engine). The Feast pod acts as Spark driver;
+        # executor pods need this IP to call back to the driver on ports 7077/7078.
+        env:
+          - name: MY_POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
 
     # ---- Registry (file / NFS PVC) ----
     # Note: SQL registry (type: sql + psycopg2) and SparkOfflineStore (pyspark) both require
