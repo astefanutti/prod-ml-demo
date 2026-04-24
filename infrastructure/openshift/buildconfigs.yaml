@@ -310,3 +310,44 @@ spec:
       memory: "8Gi"
   successfulBuildsHistoryLimit: 2
   failedBuildsHistoryLimit: 2
+
+---
+
+# BuildConfig — feast-spark-executor-embeddings
+# Extends feast-spark-executor (CPU) with sentence-transformers + pre-cached all-MiniLM-L6-v2.
+# Used as the executor image for feast materialize on review_embeddings @batch_feature_view.
+# Set SPARK_EXECUTOR_EMBEDDINGS_IMAGE in feature_store_milvus.yaml after build.
+# Must build AFTER feast-spark-executor is pushed to ${REGISTRY}.
+# Trigger: oc start-build feast-spark-executor-embeddings -n ${NAMESPACE} --follow
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: feast-spark-executor-embeddings
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+    contextDir: "."
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.feast-spark-executor-embeddings
+      noCache: false
+      buildArgs:
+        - name: REGISTRY
+          value: ${REGISTRY}
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-feast-spark-executor-embeddings:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2

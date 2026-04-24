@@ -1,0 +1,46 @@
+# feast-spark-executor-embeddings — k8s:// Spark executor for review_embeddings BFV
+#
+# Extends feast-spark-executor (CPU baseline) with:
+#   - sentence-transformers + tokenizers for all-MiniLM-L6-v2 pandas UDF
+#   - Pre-cached all-MiniLM-L6-v2 model weights baked into the image
+#     (avoids executor pods downloading ~90MB from HuggingFace Hub at runtime)
+#
+# Used by feature_store_milvus.yaml batch_engine when running:
+#   feast materialize-incremental ... --feature-views review_embeddings
+#
+# The driver pod (feast-spark image) submits executor pods using this image.
+# Executors run the _embed() pandas UDF from review_embeddings @batch_feature_view.
+#
+# Build:
+#   oc start-build feast-spark-executor-embeddings -n smartshop --follow
+
+ARG REGISTRY
+FROM ${REGISTRY}/smartshop-feast-spark-executor:latest
+
+USER 0
+
+# sentence-transformers pulls torch (CPU-only), transformers, tokenizers.
+# torch CPU wheel is ~200MB — significantly smaller than CUDA variant.
+# numpy pin avoids 1.x/2.x ABI incompatibility with pyspark arrow serialization.
+RUN pip install --no-cache-dir \
+      sentence-transformers==3.4.1 \
+      torch==2.6.0+cpu \
+      --extra-index-url https://download.pytorch.org/whl/cpu && \
+    echo "sentence-transformers $(python3 -c 'import sentence_transformers; print(sentence_transformers.__version__)')"
+
+# Pre-cache all-MiniLM-L6-v2 into the image.
+# Without this, every executor pod downloads ~90MB from huggingface.co on startup,
+# which adds 30-60s cold start and fails in air-gapped / egress-restricted clusters.
+# HF_HOME is set to /opt/hf-cache so the weights survive across /tmp resets.
+ENV HF_HOME=/opt/hf-cache
+ENV TRANSFORMERS_CACHE=/opt/hf-cache
+RUN python3 -c "
+from sentence_transformers import SentenceTransformer
+model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+# Smoke-test: encode a single string to confirm the model loads cleanly
+emb = model.encode(['test'])
+assert len(emb[0]) == 384, f'Expected dim 384, got {len(emb[0])}'
+print('Model cached and verified: dim=384')
+" && chmod -R g+r /opt/hf-cache
+
+USER 1001
