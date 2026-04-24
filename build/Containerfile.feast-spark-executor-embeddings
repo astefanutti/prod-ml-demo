@@ -32,15 +32,19 @@ RUN pip install --no-cache-dir \
 # Without this, every executor pod downloads ~90MB from huggingface.co on startup,
 # which adds 30-60s cold start and fails in air-gapped / egress-restricted clusters.
 # HF_HOME is set to /opt/hf-cache so the weights survive across /tmp resets.
+#
+# NOTE: do NOT use RUN python3 -c "from sentence_transformers ..." multi-line syntax.
+# Buildah's Dockerfile parser treats lines beginning with 'from' as FROM directives,
+# even inside RUN string arguments. Write the snippet to a file and execute it instead.
 ENV HF_HOME=/opt/hf-cache
 ENV TRANSFORMERS_CACHE=/opt/hf-cache
-RUN python3 -c "
-from sentence_transformers import SentenceTransformer
-model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
-# Smoke-test: encode a single string to confirm the model loads cleanly
-emb = model.encode(['test'])
-assert len(emb[0]) == 384, f'Expected dim 384, got {len(emb[0])}'
-print('Model cached and verified: dim=384')
-" && chmod -R g+r /opt/hf-cache
+RUN printf 'import sentence_transformers as st\n\
+model = st.SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")\n\
+emb = model.encode(["test"])\n\
+assert len(emb[0]) == 384, "expected dim 384, got %d" %% len(emb[0])\n\
+print("Model cached and verified: dim=384")\n' > /tmp/cache_model.py \
+    && python3 /tmp/cache_model.py \
+    && rm /tmp/cache_model.py \
+    && chmod -R g+r /opt/hf-cache
 
 USER 1001
