@@ -23,7 +23,7 @@
 #   spark.kubernetes.container.image: "${SPARK_EXECUTOR_EMBEDDINGS_IMAGE}"
 
 ARG REGISTRY
-FROM ${REGISTRY}/smartshop-feast-spark-executor-gpu:latest
+FROM ${REGISTRY}/smartshop-feast-spark-executor-rapids:latest
 
 USER 0
 
