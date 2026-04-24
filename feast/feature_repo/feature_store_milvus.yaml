@@ -1,0 +1,104 @@
+# feature_store_milvus.yaml — Milvus online store for review_embeddings RAG path
+#
+# Used by:
+#   feast materialize  (write path — Spark reads raw reviews, embeds, writes to Milvus)
+#   serving/rag/server.py  (read path — retrieve_online_documents_v2)
+#   scripts/load_embeddings_to_milvus.py  (legacy bulk-load fallback — see script docstring)
+#
+# Materialize command:
+#   feast -c feast/feature_repo/feature_store_milvus.yaml \
+#       materialize-incremental $(date -u +%Y-%m-%dT%H:%M:%S) \
+#       --feature-views review_embeddings
+#
+# Required env vars (same secret as other SparkApplications):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+#   MY_POD_IP  — set via downward API in the Feast pod spec (status.podIP)
+#   NAMESPACE, SPARK_RAPIDS_IMAGE
+
+project: smartshop
+provider: local
+
+registry:
+  registry_type: file
+  path: /feast-registry/registry.db
+
+# offline_store is not used by review_embeddings (offline=False).
+# Defined here only to satisfy Feast config validation.
+offline_store:
+  type: file
+
+# batch_engine drives feast materialize-incremental.
+#
+# SparkComputeEngine passes this entire block (flat) to SparkConf().setAll() —
+# all Spark keys must be TOP LEVEL, NOT nested under spark_conf.
+# (source: feast/infra/compute_engines/spark/utils.py get_or_create_new_spark_session)
+#
+# spark.master: k8s:// → Feast pod acts as Spark driver, executor pods are
+# scheduled on the cluster using ${SPARK_RAPIDS_IMAGE} (has sentence-transformers).
+# The driver pod needs MY_POD_IP exposed via downward API so executors can reach it.
+#
+# Executor sizing matches spark-application-embedding.yaml:
+#   4 instances × 4 cores × 16g RAM — sufficient for 5M review embeddings.
+#
+# partitions: 20 — controls repartitioning before Milvus upsert batches.
+batch_engine:
+  type: spark.engine
+  partitions: 20
+  spark.master: "k8s://https://kubernetes.default.svc:443"
+  spark.submit.deployMode: "client"
+  # Executor pods — use same image as embedding SparkApplication (has sentence-transformers)
+  spark.kubernetes.namespace: "${NAMESPACE}"
+  spark.kubernetes.container.image: "${SPARK_RAPIDS_IMAGE}"
+  spark.kubernetes.authenticate.driver.serviceAccountName: "spark"
+  spark.kubernetes.executor.deleteOnTermination: "true"
+  # Driver bind address — Feast pod IP exposed via downward API env var MY_POD_IP
+  spark.driver.host: "${MY_POD_IP}"
+  spark.driver.bindAddress: "0.0.0.0"
+  spark.driver.port: "7077"
+  spark.blockManager.port: "7078"
+  spark.driver.memory: "8g"
+  # Executor sizing — mirrors spark-application-embedding.yaml
+  spark.executor.instances: "4"
+  spark.executor.cores: "4"
+  spark.executor.memory: "16g"
+  spark.executor.memoryOverhead: "4g"
+  spark.executor.extraJavaOptions: "-Duser.dir=/tmp"
+  spark.driver.extraJavaOptions: "-Duser.dir=/tmp -Dcom.redhat.fips=false"
+  # HuggingFace model cache — /tmp is writable in all pods
+  spark.executorEnv.TRANSFORMERS_CACHE: "/tmp/hf-cache"
+  spark.executorEnv.HF_HOME: "/tmp/hf-home"
+  # SQL / Arrow
+  spark.ui.enabled: "false"
+  spark.eventLog.enabled: "true"
+  spark.eventLog.dir: "s3a://smartshop-spark-logs/events"
+  spark.eventLog.compress: "true"
+  spark.sql.adaptive.enabled: "true"
+  spark.sql.session.timeZone: "UTC"
+  spark.sql.shuffle.partitions: "200"
+  spark.default.parallelism: "200"
+  spark.sql.execution.arrow.pyspark.enabled: "true"
+  spark.sql.execution.arrow.fallback.enabled: "true"
+  spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+  # S3 / MinIO
+  spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+  spark.hadoop.fs.s3a.path.style.access: "true"
+  spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+  spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+  spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+  spark.hadoop.fs.s3a.connection.maximum: "100"
+  spark.hadoop.fs.s3a.threads.max: "64"
+  # Hadoop AWS JARs from MinIO (same as other SparkApplications)
+  spark.jars: "http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
+
+online_store:
+  type: milvus
+  host: "http://milvus.smartshop.svc.cluster.local"
+  port: 19530
+  vector_enabled: true
+  embedding_dim: 384
+  index_type: "IVF_FLAT"
+
+entity_key_serialization_version: 3
+
+auth:
+  type: no_auth
