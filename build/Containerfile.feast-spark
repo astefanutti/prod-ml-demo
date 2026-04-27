@@ -44,11 +44,13 @@ ENV JAVA_TOOL_OPTIONS="-Dcom.redhat.fips=false"
 # while still getting the fixed code into the installed site-packages.
 #   Bug 1: feature_builder.py — get_column_info() missing "python" mode guard  (PR #6310)
 #   Bug 2: spark.py — pull_all_from_table_or_query() missing SELECT * fallback  (PR #6311)
-#   Bug 3: spark/utils.py — pre-create S3A event log dir before SparkContext    (PR #6317)
+#   Bug 3: spark/utils.py — full set of Spark compute engine fixes for vector store
+#            materialization (S3A event log init, SQL config reuse, getattr guard,
+#            map_in_pandas sentinel schema)
 # PRs pending merge at https://github.com/feast-dev/feast — remove this block once merged.
 RUN FEAST_SITE=$(python3 -c 'import feast, os; print(os.path.dirname(feast.__file__))') && \
     echo "Patching feast in ${FEAST_SITE}" && \
-    FORK="https://raw.githubusercontent.com/abhijeet-dhumal/feast/fix/bfv-python-mode-column-info/sdk/python" && \
+    FORK="https://raw.githubusercontent.com/abhijeet-dhumal/feast/feat/spark-bfv-python-vector-store-embeddings/sdk/python" && \
     curl -fsSL -o "${FEAST_SITE}/infra/compute_engines/feature_builder.py" \
       "${FORK}/feast/infra/compute_engines/feature_builder.py" && \
     curl -fsSL -o "${FEAST_SITE}/infra/offline_stores/contrib/spark_offline_store/spark.py" \
