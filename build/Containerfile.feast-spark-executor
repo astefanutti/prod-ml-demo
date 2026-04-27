@@ -26,12 +26,15 @@ ENV JAVA_HOME=/usr/lib/jvm/jre-11
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 ENV JAVA_TOOL_OPTIONS="-Dcom.redhat.fips=false"
 
-# BFV + S3A bug patches — same 3 files as feast-spark (executor must have matching code)
+# BFV + S3A bug patches — same 4 files as feast-spark (executor must have matching code)
 #   Bug 1: feature_builder.py — get_column_info() missing "python" mode guard  (PR #6310)
 #   Bug 2: spark.py — pull_all_from_table_or_query() missing SELECT * fallback  (PR #6311)
 #   Bug 3: spark/utils.py — full set of Spark compute engine fixes for vector store
 #            materialization (S3A event log init, SQL config reuse, getattr guard,
-#            map_in_pandas sentinel schema)
+#            map_in_pandas sentinel schema, write_to_online/offline_store helpers)
+#   Bug 4: spark/nodes.py — replace mapInArrow with foreachPartition in SparkWriteNode
+#            to avoid ArrowStreamPandasUDFSerializer mismatch when WindowGroupLimitExec
+#            is upstream in the physical plan (AttributeError: 'list' has no .dtype)
 RUN FEAST_SITE=$(python3 -c 'import feast, os; print(os.path.dirname(feast.__file__))') && \
     FORK="https://raw.githubusercontent.com/abhijeet-dhumal/feast/feat/spark-bfv-python-vector-store-embeddings/sdk/python" && \
     curl -fsSL -o "${FEAST_SITE}/infra/compute_engines/feature_builder.py" \
@@ -40,6 +43,8 @@ RUN FEAST_SITE=$(python3 -c 'import feast, os; print(os.path.dirname(feast.__fil
       "${FORK}/feast/infra/offline_stores/contrib/spark_offline_store/spark.py" && \
     curl -fsSL -o "${FEAST_SITE}/infra/compute_engines/spark/utils.py" \
       "${FORK}/feast/infra/compute_engines/spark/utils.py" && \
+    curl -fsSL -o "${FEAST_SITE}/infra/compute_engines/spark/nodes.py" \
+      "${FORK}/feast/infra/compute_engines/spark/nodes.py" && \
     echo "Patch applied OK"
 
 # PySpark 3.5.3 (same pin as feast-spark — must match driver exactly)
