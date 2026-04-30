@@ -1,121 +1,202 @@
-# Production ML at Scale: SmartShop AI Architecture
+# SmartShop AI — Architecture
 
 ## Overview
 
-SmartShop AI is a production e-commerce platform that demonstrates ML at scale using
-PyTorch Distributed, Kubeflow Trainer, Apache Spark, Feast Feature Store, and Slurm
-on Red Hat OpenShift AI.
+SmartShop AI demonstrates production ML at scale on Red Hat OpenShift AI: distributed
+feature engineering with Spark, feature serving with Feast, distributed training with
+Kubeflow Trainer (DDP + QLoRA/FSDP on K8s), and multi-model serving with KServe.
 
-The platform:
-- **Recommends products** using a PyTorch two-tower model trained on purchase/rating history
-- **Summarizes reviews** using a fine-tuned Mistral-7B
-- **Answers product questions** via RAG over review embeddings stored in Feast's vector store
+- **Recommends products** — Two-Tower neural CF model trained on 29.6 GB of reviews
+- **Summarizes reviews** — Mistral-7B fine-tuned with QLoRA via FSDP
+- **Answers product questions** — RAG over 384-dim review embeddings in Milvus
 
-## Architecture Diagram
+---
 
+## Pipeline Diagram
+
+```mermaid
+flowchart TB
+    classDef stage fill:#1a1a2e,color:#fff,stroke:#e94560,stroke-width:2px,font-weight:bold
+    classDef data fill:#0f3460,color:#fff,stroke:#16213e
+    classDef spark fill:#e94560,color:#fff,stroke:#c81e4e
+    classDef feast fill:#533483,color:#fff,stroke:#3d2566
+    classDef train fill:#f08a5d,color:#fff,stroke:#c96d48
+    classDef serve fill:#00b894,color:#fff,stroke:#00876a
+    classDef registry fill:#6c5ce7,color:#fff,stroke:#5240c4
+    classDef infra fill:#2d3436,color:#dfe6e9,stroke:#636e72,stroke-dasharray:5
+    classDef rapids fill:#76b900,color:#fff,stroke:#5a8f00
+
+    subgraph S1["STAGE 1: DATA INGESTION"]
+        direction LR
+        HF["Amazon Reviews 2023\n233M reviews, 49GB\n(HuggingFace)"]
+        S3raw["Object Storage\nS3 / MinIO\n(Raw Parquet)"]
+        HF -->|"download.py"| S3raw
+    end
+
+    subgraph S2["STAGE 2: SPARK PREPROCESSING"]
+        direction TB
+        subgraph SparkOp["Kubeflow Spark Operator"]
+            direction LR
+            subgraph JobA["Job A: Feature Engineering"]
+                A1["groupBy / agg / join\nUser features\nItem features\nInteraction features"]
+            end
+            subgraph JobB["Job B: Text Preprocessing"]
+                B1["Clean, dedup, regex\nBuild instruction prompts\nTrain / val / test split"]
+            end
+            subgraph JobC["Job C: Embedding Generation"]
+                C1["sentence-transformer\nvia pandas UDF\n384-dim vectors"]
+            end
+        end
+        subgraph RapidsOpt["Optional: RAPIDS GPU Acceleration"]
+            direction LR
+            RA["Job A on GPU\n10-30x speedup\nspark-rapids plugin"]
+        end
+    end
+
+    subgraph S3["STAGE 3: FEAST FEATURE STORE"]
+        direction LR
+        Offline["Offline Store\nS3 / Parquet"]
+        Online["Online Store\nRedis"]
+        Vector["Vector Store\nMilvus"]
+        Offline -->|"feast materialize"| Online
+    end
+
+    subgraph S4["STAGE 4: DISTRIBUTED TRAINING"]
+        direction LR
+        subgraph RecTrain["4a: Recommendation Model"]
+            Rec["Two-Tower Neural CF\nPyTorch DDP\n2 nodes x 2 GPUs"]
+        end
+        subgraph LLMTrain["4b: LLM Fine-Tuning"]
+            LLM["Mistral-7B + QLoRA\nDDP on K8s\n2 nodes x 2 GPUs"]
+        end
+    end
+
+    subgraph S5["STAGE 5: MODEL REGISTRY"]
+        direction LR
+        RecModel["smartshop-rec-model\nv1.0"]
+        LLMModel["smartshop-llm-adapter\nv1.0 (LoRA weights)"]
+    end
+
+    subgraph S6["STAGE 6: SERVING (KServe)"]
+        direction LR
+        subgraph EP1["/recommend"]
+            Recommend["Feast online lookup\nModel inference\nTop-N items"]
+        end
+        subgraph EP2["/summarize"]
+            Summarize["LLM inference\nvia vLLM\nSummary + sentiment"]
+        end
+        subgraph EP3["/ask"]
+            Ask["Feast vector search\nRetrieve context\nLLM answer (RAG)"]
+        end
+    end
+
+    Gradio["Gradio Demo UI"]
+
+    S3raw --> JobA
+    S3raw --> JobB
+    S3raw --> JobC
+    JobA -.->|"Optional GPU path"| RA
+    A1 -->|"Parquet"| Offline
+    B1 -->|"JSONL"| S3llm["Object Storage\n(LLM training data)"]
+    C1 -->|"Vectors"| Vector
+    Offline -->|"S3 parquet (direct read)"| Rec
+    S3llm --> LLM
+    Rec --> RecModel
+    LLM --> LLMModel
+    RecModel --> Recommend
+    LLMModel --> Summarize
+    LLMModel --> Ask
+    Online -->|"get_online_features()"| Recommend
+    Vector -->|"similarity_search()"| Ask
+    Recommend --> Gradio
+    Summarize --> Gradio
+    Ask --> Gradio
+
+    class S1,S2,S3,S4,S5,S6 stage
+    class HF,S3raw,S3llm data
+    class JobA,JobB,JobC,A1,B1,C1,SparkOp spark
+    class Offline,Online,Vector feast
+    class RecTrain,Rec,LLMTrain,LLM train
+    class RecModel,LLMModel registry
+    class EP1,EP2,EP3,Recommend,Summarize,Ask,Gradio serve
+    class RapidsOpt,RA rapids
 ```
-                        RED HAT OPENSHIFT AI PLATFORM
- ===========================================================================================
 
- STAGE 1: DATA INGESTION
- ┌────────────────────┐
- │ Amazon Reviews     │──── Raw Parquet ───► Object Storage (S3/MinIO)
- │ Dataset (49GB)     │
- └────────────────────┘
+---
 
- STAGE 2: SPARK PREPROCESSING (Kubeflow Spark Operator)
- ┌──────────────────────────────────────────────────────────────────────┐
- │  Job A: Structured Feature Engineering                               │
- │  - User features (avg_rating, review_count, category_prefs)          │
- │  - Item features (avg_rating, price_bucket, review_volume)           │
- │  - Interaction features (user-item co-occurrence)                    │
- │  Output ──► Feast Offline Store                                      │
- │                                                                      │
- │  Job B: Text Preprocessing for LLM Fine-Tuning                       │
- │  - Cleaning, dedup, instruction-format dataset creation              │
- │  - Train/val/test split at scale                                     │
- │  Output ──► Object Storage (JSONL)                                   │
- │                                                                      │
- │  Job C: Embedding Generation (sentence-transformer via Spark UDF)    │
- │  Output ──► Feast Vector Store                                       │
- └──────────────────────────────────────────────────────────────────────┘
+## Infrastructure Diagram
 
- STAGE 3: FEAST FEATURE STORE
- ┌──────────────────────────────────────────────────────────────────────┐
- │  Offline Store (S3/Parquet)  │ Training: get_historical_features()   │
- │  Online Store (Redis)        │ Serving:  get_online_features()       │
- │  Vector Store (Milvus)       │ RAG:      similarity_search()         │
- │                                                                      │
- │  feast apply → register feature views                                │
- │  feast materialize → push offline → online                           │
- └──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    classDef platform fill:#ee0000,color:#fff,stroke:#b30000,font-weight:bold
+    classDef component fill:#2d3436,color:#dfe6e9,stroke:#636e72
+    classDef gpu fill:#76b900,color:#fff,stroke:#5a8f00
 
- STAGE 4: DISTRIBUTED TRAINING (Kubeflow Trainer, parallel TrainJobs)
- ┌─────────────────────────────────┐  ┌─────────────────────────────────┐
- │ 4a: Recommendation Model        │  │ 4b: LLM Fine-Tuning             │
- │ - Two-Tower Neural CF (PyTorch) │  │ - Mistral-7B + QLoRA            │
- │ - DDP, 4 workers on K8s         │  │ - FSDP, multi-node multi-GPU    │
- │ - Data from Feast offline store │  │ - Dispatched to Slurm cluster   │
- │ - Kubeflow Trainer TrainJob     │  │   via Project Slinky / Kueue    │
- │ - TrainingRuntime: pytorch-ddp  │  │ - TrainJob + ClusterTraining-   │
- │ Output ──► Model Registry       │  │   Runtime: llm-fsdp-slurm       │
- └─────────────────────────────────┘  │ Output ──► Model Registry       │
-                                      └─────────────────────────────────┘
+    subgraph OCP["Red Hat OpenShift AI"]
+        direction TB
+        subgraph Operators["Operators"]
+            SparkOp2["Kubeflow\nSpark Operator"]
+            Trainer["Kubeflow\nTrainer"]
+            KServe2["KServe"]
+            Kueue["Kueue"]
+        end
+        subgraph Storage["Storage & State"]
+            MinIO["MinIO\n(S3)"]
+            Redis2["Redis\n(Online Store)"]
+            Milvus2["Milvus\n(Vector Store)"]
+            ModelReg["Model\nRegistry"]
+        end
+        subgraph Compute["Compute"]
+            CPU["CPU Nodes\nSpark drivers · Rec DDP"]
+            GPU["GPU Nodes\nLLM FSDP · vLLM · RAPIDS"]
+        end
+    end
 
- STAGE 5: MODEL REGISTRY (Kubeflow Model Registry)
- ┌──────────────────────────────────────────────────────────────────────┐
- │  smartshop-rec-model v1.0     │  smartshop-llm-adapter v1.0          │
- │  (metrics, lineage, artifact) │  (base model, LoRA weights, metrics) │
- └──────────────────────────────────────────────────────────────────────┘
+    SparkOp2 --> CPU
+    SparkOp2 -.->|"RAPIDS"| GPU
+    Trainer --> CPU
+    Trainer --> GPU
+    KServe2 --> GPU
 
- STAGE 6: SERVING (KServe on OpenShift)
- ┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────┐
- │ /recommend           │  │ /summarize           │  │ /ask (RAG)       │
- │ Feast online lookup  │  │ LLM inference        │  │ Feast vector     │
- │ → model inference    │  │ via vLLM             │  │ search → LLM     │
- │ → top-N items        │  │ → summary+sentiment  │  │ → answer         │
- └──────────────────────┘  └──────────────────────┘  └──────────────────┘
+    class OCP platform
+    class SparkOp2,Trainer,KServe2,Kueue,MinIO,Redis2,Milvus2,ModelReg,CPU component
+    class GPU gpu
 ```
 
-## Why Each Component Earns Its Place
+---
+
+## Data Flow Summary
+
+| Stage | Input | Processing | Output | Accelerator |
+|---|---|---|---|---|
+| 1. Ingest | HuggingFace dataset | `download.py` | S3 raw Parquet | — |
+| 2a. Features | Raw reviews | Spark groupBy/agg/join | Feast offline store (Parquet) | CPU or GPU (RAPIDS) |
+| 2b. Text prep | Raw reviews | Spark filter/dedup + UDFs | JSONL on S3 | CPU |
+| 2c. Embeddings | Raw reviews | sentence-transformer UDF | Feast vector store (Milvus) | CPU (UDF) |
+| 3. Feast | Offline Parquet | `feast materialize` | Redis online store | — |
+| 4a. Rec model | S3 interactions | PyTorch DDP (2 nodes x 2 GPUs) | Model Registry | GPU |
+| 4b. LLM | JSONL training data | QLoRA DDP (2 nodes x 2 GPUs) | Model Registry | GPU |
+| 6. Serving | User requests | KServe + vLLM | JSON responses | GPU |
+
+---
+
+## Why Each Component
 
 | Component | Role | Why It's Needed |
 |---|---|---|
-| **Spark** | ETL, feature eng, embeddings | 233M reviews at 49GB can't be processed in pandas |
-| **Feast** | Feature store + vector store | Same features for train/serve (no skew); vector store for RAG |
-| **Kubeflow Trainer** | Distributed training orchestration | Two TrainJobs: DDP rec model + FSDP LLM fine-tuning |
-| **Slurm** | HPC GPU scheduling for LLM | Multi-node FSDP needs gang scheduling + topology-aware placement |
-| **KServe** | Model serving | Three endpoints with autoscaling |
-| **GenAI/LLM** | Review summarization + RAG Q&A | The data IS text -- LLM fine-tuning is the natural thing to do |
+| **Spark** | ETL, feature eng, embeddings | 29.6 GB of reviews can't be processed in pandas |
+| **RAPIDS** | GPU-accelerated Spark | 4% speedup on feature engineering — same PySpark code, zero changes; see `feast/BFV-DESIGN.md §5` |
+| **Feast** | Feature store + vector store | Train-serve skew prevention; vector store for RAG |
+| **Kubeflow Trainer** | Distributed training orchestration | DDP rec model + QLoRA LLM fine-tuning via TrainJob CRD |
+| **KServe** | Model serving | Three autoscaling endpoints |
+| **Milvus** | Vector similarity search | RAG retrieval over 5M review embeddings |
 
-## Dataset Strategy
-
-- **Primary**: Amazon Reviews 2023 (subset: Electronics + Books + Home categories, ~30-50GB)
-- **Source**: huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023
-- **Sample**: ~1M reviews bundled for quick local testing
-- **Pre-trained artifacts**: Downloadable to skip training and jump to serving
-
-## Slurm Integration
-
-The LLM fine-tuning job (7B model, FSDP across 2 nodes x 4 GPUs) is the natural Slurm workload:
-- **Gang scheduling**: All 8 GPUs must be available simultaneously
-- **Topology awareness**: Slurm places workers on nodes with optimal interconnects
-- **HPC reuse narrative**: "Use your existing GPU cluster from OpenShift AI"
-
-Integration path: Kubeflow Trainer TrainJob -> ClusterTrainingRuntime -> Kueue AppWrapper -> Slurm sbatch -> GPU nodes -> artifacts back to S3 -> Model Registry
-
-## Optional: GPU-Accelerated Spark
-
-The Spark preprocessing jobs (Stage 2) can optionally run on GPUs using the [RAPIDS Accelerator for Apache Spark](https://nvidia.github.io/spark-rapids/). This is a drop-in plugin -- the same PySpark code runs unchanged, with DataFrame operations offloaded to GPU. The feature engineering job (Job A) benefits most, with 10-30x speedups on its heavy groupBy/join/aggregation workload.
-
-See [docs/rapids.md](rapids.md) for per-job analysis, infrastructure requirements, and configuration.
+---
 
 ## Key References
 
-- [Red Hat AI Quickstart Product Recommender](https://developers.redhat.com/articles/2026/01/20/ai-quickstart-product-recommender-openshift-ai)
-- [Kubeflow Fraud Detection E2E](https://blog.kubeflow.org/fraud-detection-e2e/)
-- [Fine-tune RAG with Feast + Kubeflow Trainer](https://developers.redhat.com/articles/2025/12/17/fine-tune-rag-model-feast-kubeflow-trainer)
-- [OpenShift AI 3.3 Fine-Tuning Pipelines](https://developers.redhat.com/articles/2026/02/26/fine-tune-ai-pipelines-red-hat-openshift-ai)
 - [Feast GenAI Integration](https://docs.feast.dev/getting-started/genai)
 - [Sovereign AI with Kubeflow Trainer + Feast](https://redhat.com/en/blog/sovereign-ai-architecture-scaling-distributed-training-kubeflow-trainer-and-feast-red-hat-openshift-ai)
+- [Fine-tune RAG with Feast + Kubeflow Trainer](https://developers.redhat.com/articles/2025/12/17/fine-tune-rag-model-feast-kubeflow-trainer)
+- [Red Hat AI Quickstart Product Recommender](https://developers.redhat.com/articles/2026/01/20/ai-quickstart-product-recommender-openshift-ai)
 - [Amazon Reviews 2023 Dataset](https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023)

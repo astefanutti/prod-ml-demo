@@ -1,0 +1,15 @@
+---
+# Service CA ConfigMap — OpenShift service-ca controller auto-populates service-ca.crt
+# when this annotation is present. Used by the rec-trainer pod to verify TLS connections
+# to RHOAI Feast Operator services (registry on port 443, signed by OpenShift service CA).
+#
+# Apply once: oc apply -f infrastructure/openshift/service-ca-configmap.yaml
+# The controller fills it within ~10 seconds.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smartshop-service-ca
+  namespace: ${NAMESPACE}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+data: {}

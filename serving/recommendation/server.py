@@ -1,7 +1,7 @@
 """KServe-compatible recommendation server.
 
-Loads the Two-Tower model and Feast online features to serve
-real-time product recommendations.
+Loads the Two-Tower model with ID mappings from the training checkpoint
+and serves real-time product recommendations.
 
 Endpoints:
     POST /v1/models/smartshop-rec:predict
@@ -10,67 +10,97 @@ Endpoints:
 """
 
 import os
+import random
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
 import torch
+import torch.nn as nn
 from fastapi import FastAPI
-from feast import FeatureStore
+from prometheus_client import Counter, Histogram, make_asgi_app
 from pydantic import BaseModel
 
-from training.recommendation.model import TwoTowerModel
+REQUEST_DURATION = Histogram(
+    "smartshop_rec_request_duration_seconds", "Predict latency",
+    buckets=[.005, .01, .025, .05, .1, .25, .5, 1, 2.5],
+)
+REQUESTS_TOTAL = Counter(
+    "smartshop_rec_requests_total", "Total prediction requests", ["status"],
+)
+CANDIDATES_SCORED = Histogram(
+    "smartshop_rec_candidates_scored", "Items scored per request",
+    buckets=[10, 25, 50, 100, 200, 500],
+)
 
-_model: Optional[TwoTowerModel] = None
-_feast_store: Optional[FeatureStore] = None
-_checkpoint: Optional[dict] = None
 
-USER_FEAT_COLS = [
-    "user_features:user_avg_rating",
-    "user_features:user_review_count",
-    "user_features:user_unique_items",
-    "user_features:user_avg_review_length",
-    "user_features:user_category_count",
-    "user_features:user_tenure_days",
-]
-ITEM_FEAT_COLS = [
-    "item_features:item_avg_rating",
-    "item_features:item_rating_stddev",
-    "item_features:item_review_count",
-    "item_features:item_total_helpful_votes",
-    "item_features:item_avg_review_length",
-    "item_features:item_price",
-]
-USER_FEAT_KEYS = [f.split(":")[1] for f in USER_FEAT_COLS]
-ITEM_FEAT_KEYS = [f.split(":")[1] for f in ITEM_FEAT_COLS]
+class TwoTower(nn.Module):
+    """Matches the architecture produced by 01_training_rec.ipynb."""
+
+    def __init__(self, n_users: int, n_items: int, embed_dim: int = 64, hidden_dim: int = 256):
+        super().__init__()
+        self.user_embed = nn.Embedding(n_users, embed_dim)
+        self.item_embed = nn.Embedding(n_items, embed_dim)
+        self.user_mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(hidden_dim, embed_dim),
+        )
+        self.item_mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(hidden_dim, embed_dim),
+        )
+
+    def forward(self, users: torch.Tensor, items: torch.Tensor) -> torch.Tensor:
+        u = self.user_mlp(self.user_embed(users))
+        i = self.item_mlp(self.item_embed(items))
+        return (u * i).sum(dim=1)
+
+
+_model: Optional[TwoTower] = None
+_user_to_idx: dict = {}
+_item_to_idx: dict = {}
+_idx_to_item: dict = {}
+_all_item_ids: list = []
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _model, _feast_store, _checkpoint
+    global _model, _user_to_idx, _item_to_idx, _idx_to_item, _all_item_ids
 
     model_path = os.environ.get("MODEL_PATH", "models/recommendation/best_model.pt")
-    feast_repo = os.environ.get("FEAST_REPO_PATH", "feast/feature_repo")
 
-    _checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
-    _model = TwoTowerModel(
-        num_users=_checkpoint["num_users"],
-        num_items=_checkpoint["num_items"],
-        user_feat_dim=_checkpoint["user_feat_dim"],
-        item_feat_dim=_checkpoint["item_feat_dim"],
-        embed_dim=_checkpoint["embed_dim"],
-        hidden_dim=_checkpoint["hidden_dim"],
-    )
-    _model.load_state_dict(_checkpoint["model_state_dict"])
+    checkpoint = torch.load(model_path, map_location="cpu", weights_only=False)
+
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+        n_users = checkpoint["n_users"]
+        n_items = checkpoint["n_items"]
+        embed_dim = checkpoint.get("embed_dim", 64)
+        hidden_dim = checkpoint.get("hidden_dim", 256)
+        _user_to_idx = checkpoint.get("user_to_idx", {})
+        _item_to_idx = checkpoint.get("item_to_idx", {})
+    else:
+        state_dict = checkpoint
+        n_users = state_dict["user_embed.weight"].shape[0]
+        n_items = state_dict["item_embed.weight"].shape[0]
+        embed_dim = state_dict["user_embed.weight"].shape[1]
+        hidden_dim = state_dict["user_mlp.0.weight"].shape[0]
+
+    _idx_to_item = {v: k for k, v in _item_to_idx.items()}
+    _all_item_ids = list(_item_to_idx.keys())
+
+    _model = TwoTower(n_users, n_items, embed_dim, hidden_dim)
+    _model.load_state_dict(state_dict)
     _model.eval()
 
-    _feast_store = FeatureStore(repo_path=feast_repo)
-    print(f"Model loaded from {model_path} "
-          f"(user_feat_dim={_checkpoint['user_feat_dim']}, "
-          f"item_feat_dim={_checkpoint['item_feat_dim']})")
+    print(f"Model loaded: {n_users} users, {n_items} items, "
+          f"embed_dim={embed_dim}, hidden_dim={hidden_dim}, "
+          f"mappings={'yes' if _user_to_idx else 'no'}")
     yield
 
 
 app = FastAPI(title="SmartShop Recommendation Service", lifespan=lifespan)
+app.mount("/metrics", make_asgi_app())
 
 
 class RecommendRequest(BaseModel):
@@ -83,70 +113,54 @@ class RecommendResponse(BaseModel):
     recommendations: list[dict]
 
 
-def _feat_row(d: dict, keys: list[str], n: int) -> list[float]:
-    """Extract feature values from a Feast result dict, defaulting to 0."""
-    return [float(d.get(k, [0.0])[0] or 0.0) for k in keys[:n]]
-
-
 @app.post("/v1/models/smartshop-rec:predict", response_model=RecommendResponse)
 def predict(request: RecommendRequest):
-    user_to_idx = _checkpoint["user_to_idx"]
-    item_to_idx = _checkpoint["item_to_idx"]
-    n_user = _checkpoint["user_feat_dim"]
-    n_item = _checkpoint["item_feat_dim"]
-
-    user_idx = user_to_idx.get(request.user_id, 0)
-
-    # User features — single Feast call
+    t0 = time.perf_counter()
     try:
-        user_result = _feast_store.get_online_features(
-            features=USER_FEAT_COLS[:n_user],
-            entity_rows=[{"user_id": request.user_id}],
-        ).to_dict()
-        user_feat_values = _feat_row(user_result, USER_FEAT_KEYS, n_user)
-    except Exception:
-        user_feat_values = [0.0] * n_user
+        if _user_to_idx:
+            user_idx = _user_to_idx.get(request.user_id, 0)
+        else:
+            user_idx = hash(request.user_id) % _model.user_embed.num_embeddings
 
-    user_ids_t = torch.tensor([user_idx], dtype=torch.long)
-    user_feats_t = torch.tensor([user_feat_values], dtype=torch.float32)
+        if request.candidate_items:
+            candidates = request.candidate_items
+        elif _all_item_ids:
+            candidates = random.sample(_all_item_ids, min(200, len(_all_item_ids)))
+        else:
+            candidates = [str(i) for i in range(min(200, _model.item_embed.num_embeddings))]
 
-    candidates = request.candidate_items or list(item_to_idx.keys())[:100]
+        if _item_to_idx:
+            item_indices = [_item_to_idx.get(iid, 0) for iid in candidates]
+        else:
+            item_indices = [hash(iid) % _model.item_embed.num_embeddings for iid in candidates]
 
-    # Batch all candidate item lookups in a single Feast call
-    entity_rows = [{"item_id": iid} for iid in candidates]
-    try:
-        item_result = _feast_store.get_online_features(
-            features=ITEM_FEAT_COLS[:n_item],
-            entity_rows=entity_rows,
-        ).to_dict()
-        # item_result values are lists aligned to entity_rows order
-        item_feats_batch = [
-            [float(item_result.get(k, [0.0] * len(candidates))[i] or 0.0)
-             for k in ITEM_FEAT_KEYS[:n_item]]
-            for i in range(len(candidates))
+        user_ids_t = torch.tensor([user_idx] * len(candidates), dtype=torch.long)
+        item_ids_t = torch.tensor(item_indices, dtype=torch.long)
+
+        with torch.no_grad():
+            logits = _model(user_ids_t, item_ids_t)
+            scores_t = torch.sigmoid(logits).tolist()
+
+        scores = [
+            {"item_id": iid, "score": round(s, 4)}
+            for iid, s in zip(candidates, scores_t)
         ]
-    except Exception:
-        item_feats_batch = [[0.0] * n_item] * len(candidates)
+        scores.sort(key=lambda x: x["score"], reverse=True)
 
-    # Score all candidates in one forward pass
-    item_indices = [item_to_idx.get(iid, 0) for iid in candidates]
-    item_ids_t = torch.tensor(item_indices, dtype=torch.long)
-    item_feats_t = torch.tensor(item_feats_batch, dtype=torch.float32)
-    user_ids_exp = user_ids_t.expand(len(candidates))
-    user_feats_exp = user_feats_t.expand(len(candidates), -1)
-
-    with torch.no_grad():
-        logits = _model(user_ids_exp, user_feats_exp, item_ids_t, item_feats_t)
-        scores_t = torch.sigmoid(logits).tolist()
-
-    scores = [
-        {"item_id": iid, "score": round(s, 4)}
-        for iid, s in zip(candidates, scores_t)
-    ]
-    scores.sort(key=lambda x: x["score"], reverse=True)
-    return RecommendResponse(recommendations=scores[: request.top_k])
+        CANDIDATES_SCORED.observe(len(candidates))
+        REQUESTS_TOTAL.labels(status="ok").inc()
+        return RecommendResponse(recommendations=scores[: request.top_k])
+    except Exception as e:
+        REQUESTS_TOTAL.labels(status="error").inc()
+        raise e
+    finally:
+        REQUEST_DURATION.observe(time.perf_counter() - t0)
 
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "model_loaded": _model is not None}
+    return {
+        "status": "healthy",
+        "model_loaded": _model is not None,
+        "has_mappings": bool(_user_to_idx),
+    }

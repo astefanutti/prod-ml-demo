@@ -77,7 +77,7 @@ spec:
     # All JARs served from MinIO — no Maven download, works air-gapped.
     # rapids-4-spark-cuda13.jar: cluster runs CUDA 13.0; cuda12 variant JNI can't find
     # libcudart.so.12, so we use the cuda13 variant explicitly.
-    spark.jars: "http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/rapids-4-spark-cuda13.jar"
+    spark.jars: "http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar,http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/rapids-4-spark-cuda13.jar"
     # Adaptive query execution for GPU execution
     spark.sql.files.maxPartitionBytes: "512m"
     spark.sql.adaptive.enabled: "true"

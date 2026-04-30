@@ -50,7 +50,7 @@ data:
 
     spark.ui.enabled: "false"
     spark.eventLog.enabled: "true"
-    spark.eventLog.dir: "s3a://smartshop-features/spark-events/"
+    spark.eventLog.dir: "s3a://smartshop-spark-logs/events/"
     spark.sql.session.timeZone: "UTC"
     spark.sql.shuffle.partitions: "200"
     spark.default.parallelism: "200"

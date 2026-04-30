@@ -9,7 +9,7 @@
 # the raw pod hostname because it is not registered in cluster DNS.
 #
 # This ClusterIP Service pins a stable FQDN:
-#   feast-spark-driver.smartshop.svc.cluster.local:7078
+#   feast-spark-driver.${NAMESPACE}.svc.cluster.local:7078
 # which is what spark.driver.host is set to in feast-spark-engine-cpu/rapids.yaml.
 #
 # Without this Service:
@@ -21,13 +21,13 @@
 #   (NOT app=feast-smartshop-feast — that label does NOT exist on the pod.)
 #
 # Apply:
-#   oc apply -f infrastructure/openshift/feast-spark-driver-svc.yaml
+#   envsubst < infrastructure/openshift/feast-spark-driver-svc.yaml | oc apply -f -
 #   (idempotent — safe to re-apply at any time)
 apiVersion: v1
 kind: Service
 metadata:
   name: feast-spark-driver
-  namespace: smartshop
+  namespace: ${NAMESPACE}
   labels:
     app: smartshop
     component: feast-spark-driver

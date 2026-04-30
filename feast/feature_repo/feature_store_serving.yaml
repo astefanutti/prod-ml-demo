@@ -1,0 +1,27 @@
+# Minimal Feast config for RAG serving — online store only (Milvus).
+# No offline_store or batch_engine needed; avoids pyspark dependency.
+# Used by serving/rag/server.py for retrieve_online_documents_v2().
+
+project: smartshop
+provider: local
+
+registry:
+  registry_type: remote
+  path: feast-smartshop-feast-registry.smartshop.svc.cluster.local:443
+  cert: /var/run/secrets/feast-registry-tls/service-ca.crt
+
+offline_store:
+  type: file
+
+online_store:
+  type: milvus
+  host: "http://milvus.smartshop.svc.cluster.local"
+  port: 19530
+  vector_enabled: true
+  embedding_dim: 384
+  index_type: "IVF_FLAT"
+
+entity_key_serialization_version: 3
+
+auth:
+  type: no_auth

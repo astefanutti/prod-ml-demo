@@ -47,9 +47,9 @@ spec:
               name: http
           env:
             - name: GF_SECURITY_ADMIN_PASSWORD
-              value: "smartshop2026"
+              value: "${GRAFANA_ADMIN_PASSWORD}"
             - name: GF_SECURITY_ADMIN_USER
-              value: "admin"
+              value: "${GRAFANA_ADMIN_USER:-admin}"
             - name: GF_AUTH_ANONYMOUS_ENABLED
               value: "true"
             - name: GF_AUTH_ANONYMOUS_ORG_ROLE
@@ -172,18 +172,18 @@ data:
           httpHeaderName1: "Authorization"
         secureJsonData:
           httpHeaderValue1: "Bearer ${PROMETHEUS_TOKEN}"
-  - name: OCP-UserWorkload
-    type: prometheus
-    uid: ocp-uwm
-    url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092
-    access: proxy
-    jsonData:
-      httpMethod: POST
-      timeInterval: "15s"
-      tlsSkipVerify: true
-      httpHeaderName1: "Authorization"
-    secureJsonData:
-      httpHeaderValue1: "Bearer ${PROMETHEUS_TOKEN}"
+      - name: OCP-UserWorkload
+        type: prometheus
+        uid: ocp-uwm
+        url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092
+        access: proxy
+        jsonData:
+          httpMethod: POST
+          timeInterval: "15s"
+          tlsSkipVerify: true
+          httpHeaderName1: "Authorization"
+        secureJsonData:
+          httpHeaderValue1: "Bearer ${PROMETHEUS_TOKEN}"
 
 ---
 # Dashboard provisioning config — tells Grafana where to find dashboard JSON files
@@ -280,7 +280,7 @@ data:
         {
           "id": 1, "title": "Commands Processed / sec",
           "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "rate(redis_commands_processed_total{namespace=\"${NAMESPACE}\"}[1m])",
             "legendFormat": "ops/sec"}]
         },
@@ -290,35 +290,35 @@ data:
           "fieldConfig": {"defaults": {"min": 0, "max": 1, "unit": "percentunit",
             "thresholds": {"steps": [{"color":"red","value":0},{"color":"yellow","value":0.8},{"color":"green","value":0.95}]}}},
           "gridPos": {"x":12,"y":0,"w":6,"h":8},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "rate(redis_keyspace_hits_total{namespace=\"${NAMESPACE}\"}[5m]) / (rate(redis_keyspace_hits_total{namespace=\"${NAMESPACE}\"}[5m]) + rate(redis_keyspace_misses_total{namespace=\"${NAMESPACE}\"}[5m]))",
             "legendFormat": "hit ratio"}]
         },
         {
           "id": 3, "title": "Memory Used (MB)",
           "type": "stat", "gridPos": {"x":18,"y":0,"w":6,"h":8},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "redis_memory_used_bytes{namespace=\"${NAMESPACE}\"} / 1048576",
             "legendFormat": "MB"}]
         },
         {
           "id": 4, "title": "Keys in DB (materialized features)",
           "type": "stat", "gridPos": {"x":0,"y":8,"w":8,"h":6},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "redis_db_keys{namespace=\"${NAMESPACE}\"}",
             "legendFormat": "keys"}]
         },
         {
           "id": 5, "title": "Connected Clients",
           "type": "stat", "gridPos": {"x":8,"y":8,"w":8,"h":6},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "redis_connected_clients{namespace=\"${NAMESPACE}\"}",
             "legendFormat": "clients"}]
         },
         {
           "id": 6, "title": "Instantaneous Ops/sec",
           "type": "stat", "gridPos": {"x":16,"y":8,"w":8,"h":6},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "redis_instantaneous_ops_per_sec{namespace=\"${NAMESPACE}\"}",
             "legendFormat": "ops/sec"}]
         }
@@ -335,32 +335,157 @@ data:
         {
           "id": 1, "title": "Executor JVM Heap Used (bytes)",
           "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "metrics_jvm_heap_used_bytes{namespace=\"${NAMESPACE}\"}",
             "legendFormat": "{{executor_id}}"}]
         },
         {
           "id": 2, "title": "GC Time (ms/min rate)",
           "type": "timeseries", "gridPos": {"x":12,"y":0,"w":12,"h":8},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "rate(metrics_jvm_total_gc_time_ms{namespace=\"${NAMESPACE}\"}[1m])",
             "legendFormat": "{{executor_id}} GC ms/s"}]
         },
         {
           "id": 3, "title": "Shuffle Read Bytes/sec",
           "type": "timeseries", "gridPos": {"x":0,"y":8,"w":12,"h":8},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "rate(metrics_executor_shuffleLocalBytesRead_total{namespace=\"${NAMESPACE}\"}[1m])",
-            "legendFormat": "{{executor_id}} local"}, {"datasource": "ocp-uwm",
+            "legendFormat": "{{executor_id}} local"}, {"datasource": "ocp-thanos",
             "expr": "rate(metrics_executor_shuffleRemoteBytesRead_total{namespace=\"${NAMESPACE}\"}[1m])",
             "legendFormat": "{{executor_id}} remote"}]
         },
         {
           "id": 4, "title": "BlockManager Memory (RDD cache)",
           "type": "timeseries", "gridPos": {"x":12,"y":8,"w":12,"h":8},
-          "targets": [{"datasource": "ocp-uwm",
+          "targets": [{"datasource": "ocp-thanos",
             "expr": "metrics_BlockManager_memory_memUsed_MB{namespace=\"${NAMESPACE}\"}",
             "legendFormat": "{{executor_id}} cache MB"}]
+        }
+      ]
+    }
+
+  smartshop-inference.json: |
+    {
+      "title": "SmartShop Inference Metrics",
+      "uid": "smartshop-inference",
+      "refresh": "10s",
+      "time": {"from": "now-30m", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "title": "Request Rate (req/s)",
+          "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rec_requests_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "Rec Model"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:request_success_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "LLM (vLLM)"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rag_requests_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "RAG Q&A"}
+          ]
+        },
+        {
+          "id": 2, "title": "vLLM — KV Cache Usage %",
+          "type": "gauge", "gridPos": {"x":12,"y":0,"w":6,"h":8},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.7}, {"color": "red", "value": 0.9}]}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "vllm:kv_cache_usage_perc{namespace=\"smartshop\"}", "legendFormat": "KV cache"}
+          ]
+        },
+        {
+          "id": 3, "title": "vLLM — Running / Waiting Requests",
+          "type": "timeseries", "gridPos": {"x":18,"y":0,"w":6,"h":8},
+          "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 15}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "vllm:num_requests_running{namespace=\"smartshop\"}", "legendFormat": "Running"},
+            {"datasource": "ocp-thanos", "expr": "vllm:num_requests_waiting{namespace=\"smartshop\"}", "legendFormat": "Waiting"}
+          ]
+        },
+        {
+          "id": 4, "title": "Rec Model Latency (p50 / p95 / p99)",
+          "type": "timeseries", "gridPos": {"x":0,"y":8,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p95"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.99, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p99"}
+          ]
+        },
+        {
+          "id": 5, "title": "vLLM End-to-End Latency (p50 / p95)",
+          "type": "timeseries", "gridPos": {"x":8,"y":8,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p95"}
+          ]
+        },
+        {
+          "id": 6, "title": "RAG Latency Breakdown (p95)",
+          "type": "timeseries", "gridPos": {"x":16,"y":8,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_retrieval_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "Retrieval (Milvus)"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_llm_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "LLM Generation"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_request_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "Total"}
+          ]
+        },
+        {
+          "id": 7, "title": "vLLM — Time to First Token (p50 / p95)",
+          "type": "timeseries", "gridPos": {"x":0,"y":16,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "TTFT p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "TTFT p95"}
+          ]
+        },
+        {
+          "id": 8, "title": "vLLM — Token Throughput (tokens/s)",
+          "type": "timeseries", "gridPos": {"x":8,"y":16,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:prompt_tokens_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "Prompt tokens/s"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:generation_tokens_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "Generation tokens/s"}
+          ]
+        },
+        {
+          "id": 9, "title": "vLLM — Inter-Token Latency (p50 / p95)",
+          "type": "timeseries", "gridPos": {"x":16,"y":16,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:inter_token_latency_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "ITL p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:inter_token_latency_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "ITL p95"}
+          ]
+        },
+        {
+          "id": 10, "title": "Rec — Candidates Scored",
+          "type": "stat", "gridPos": {"x":0,"y":24,"w":6,"h":5},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rec_candidates_scored_sum{namespace=\"smartshop\"}[5m])) / sum(rate(smartshop_rec_candidates_scored_count{namespace=\"smartshop\"}[5m]))", "legendFormat": "avg/request"}
+          ]
+        },
+        {
+          "id": 11, "title": "RAG — Sources Retrieved",
+          "type": "stat", "gridPos": {"x":6,"y":24,"w":6,"h":5},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(smartshop_rag_sources_retrieved_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "median sources"}
+          ]
+        },
+        {
+          "id": 12, "title": "vLLM — Avg Generation Tokens / Request",
+          "type": "stat", "gridPos": {"x":12,"y":24,"w":6,"h":5},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:request_generation_tokens_sum{namespace=\"smartshop\"}[5m])) / sum(rate(vllm:request_generation_tokens_count{namespace=\"smartshop\"}[5m]))", "legendFormat": "avg tokens"}
+          ]
+        },
+        {
+          "id": 13, "title": "vLLM — Prefill vs Decode Time (p95)",
+          "type": "stat", "gridPos": {"x":18,"y":24,"w":6,"h":5},
+          "fieldConfig": {"defaults": {"unit": "s"}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:request_prefill_time_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "Prefill p95"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:request_decode_time_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "Decode p95"}
+          ]
         }
       ]
     }

@@ -1,21 +1,46 @@
-FROM registry.access.redhat.com/ubi9/python-312-minimal:1
+# Use the official RHOAI training runtime as base.
+# CUDA 13.0 + Python 3.12 + PyTorch 2.9.1 — pre-built, Red Hat supported.
+# Matches the cluster GPU nodes (A100, CUDA 13.0 driver).
+#
+# Already in the base image — do NOT reinstall:
+#   torch, pandas, pyarrow, s3fs, fsspec, mlflow (3.10.1+rhaiv.2 Red Hat fork),
+#   datasets, transformers, peft, trl, bitsandbytes, accelerate, sentencepiece,
+#   deepspeed, flash-attn, xformers, numpy, scipy, scikit-learn
+#
+# Source: https://github.com/opendatahub-io/distributed-workloads/tree/main/images/runtime/training
+# Runtime manifest: https://github.com/opendatahub-io/trainer/tree/main/manifests/rhoai/runtimes
+FROM quay.io/opendatahub/odh-th06-cuda130-torch291-py312:odh-3.4
 
+# Install only packages NOT present in the base image.
 USER 0
-RUN microdnf install -y gcc python3.12-devel && microdnf clean all
-
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-ENV UV_CACHE_DIR=/tmp/uv-cache
+RUN uv pip install --no-cache \
+      --python /opt/app-root/bin/python3.12 \
+      pyspark \
+      feast[grpc]==0.62.0
+
+# PySpark 4.0 ships Hadoop 3.4.1 which uses AWS SDK v2 for S3A.
+# Need: hadoop-aws + SDK v2 bundle + SDK v1 bundle (for backwards compat).
+RUN SPARK_JARS=$(python3.12 -c 'import pyspark, os; print(os.path.join(os.path.dirname(pyspark.__file__), "jars"))') && \
+    echo "SPARK_JARS=$SPARK_JARS" && \
+    curl -fsSL -o "${SPARK_JARS}/hadoop-aws-3.4.1.jar" \
+      https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.4.1/hadoop-aws-3.4.1.jar && \
+    curl -fsSL -o "${SPARK_JARS}/bundle-2.24.6.jar" \
+      https://repo1.maven.org/maven2/software/amazon/awssdk/bundle/2.24.6/bundle-2.24.6.jar && \
+    curl -fsSL -o "${SPARK_JARS}/aws-java-sdk-bundle-1.12.784.jar" \
+      https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.784/aws-java-sdk-bundle-1.12.784.jar && \
+    echo "S3A JARs installed:" && ls -lh ${SPARK_JARS}/hadoop-aws* ${SPARK_JARS}/bundle* ${SPARK_JARS}/aws-java-sdk*
 
 WORKDIR /app
 
-COPY build/requirements/training.txt requirements.txt
-RUN uv pip install --python python3.12 --no-cache -r requirements.txt
-
 COPY training/recommendation/ training/recommendation/
+# Bake in the training-specific feature_store.yaml (remote registry, no online store)
+# so FeatureStore(repo_path="/feast/feature_repo") works without a PVC mount.
+RUN mkdir -p /feast/feature_repo
+COPY feast/feature_repo/feature_store_training.yaml /feast/feature_repo/feature_store.yaml
 
 USER 1001
 
 # TrainJob overrides this CMD with --nproc_per_node=4 and actual S3 paths.
-# Standalone: docker run ... --data-dir /local/features --output-dir /local/models
 CMD ["torchrun", "--nproc_per_node=1", "training/recommendation/train.py", \
      "--data-dir", "data/processed", "--output-dir", "models/recommendation"]

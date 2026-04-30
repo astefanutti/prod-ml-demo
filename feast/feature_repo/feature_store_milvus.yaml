@@ -9,29 +9,22 @@
 #   S3 raw parquet  →  SparkSource  →  @batch_feature_view  →  _embed() pandas UDF
 #   (sentence-transformers, GPU via RAPIDS on executor pods)  →  Milvus online store
 #
-# Run (exec into running Feast pod — no separate Job needed):
-#   oc cp feast/feature_repo/feature_store_milvus.yaml \
-#       smartshop/feast-smartshop-feast-<pod>:/tmp/feature_store_milvus.yaml -c offline
+# Run via Kubernetes Job (feast-materialize-embeddings-job.yaml):
+#   set -a; source .env; set +a
+#   envsubst < infrastructure/openshift/feast-materialize-embeddings-job.yaml | oc apply -f -
+#   oc logs -n smartshop job/feast-materialize-embeddings -f
 #
-#   oc exec -n smartshop feast-smartshop-feast-<pod> -c offline -- bash -c "
-#     export MY_POD_IP=\$(hostname -I | awk '{print \$1}')
-#     feast -c /tmp/feature_store_milvus.yaml apply
-#     feast -c /tmp/feature_store_milvus.yaml \
-#       materialize 2023-06-01T00:00:00 2023-06-08T00:00:00 \
-#       --feature-views review_embeddings
-#   "
-#
-# Required env vars (already present in offline container via feast-s3-credentials secret):
+# Registry: remote gRPC (feast-smartshop-feast-registry svc, TLS cert mounted by Job)
+# Required env vars (injected via smartshop-credentials secret in the Job):
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 
 project: smartshop
 provider: local
 
 registry:
-  registry_type: file
-  # Same PVC already mounted in the Feast pod at /feast-registry.
-  # Run this via oc exec -c offline — no separate pod, no gRPC TLS.
-  path: /feast-registry/registry.db
+  registry_type: remote
+  path: feast-smartshop-feast-registry.smartshop.svc.cluster.local:443
+  cert: /var/run/secrets/feast-registry-tls/tls.crt
 
 # offline_store: feast apply validates SparkSource schemas by starting a local Spark session.
 # The BFV materialization itself is driven by batch_engine (below), not offline_store.
@@ -96,9 +89,11 @@ batch_engine:
   spark.executor.memoryOverhead: "4g"
   spark.executor.extraJavaOptions: "-Duser.dir=/tmp"
   spark.driver.extraJavaOptions: "-Duser.dir=/tmp -Dcom.redhat.fips=false"
-  # HuggingFace model cache — /tmp is writable in all pods
-  spark.executorEnv.TRANSFORMERS_CACHE: "/tmp/hf-cache"
-  spark.executorEnv.HF_HOME: "/tmp/hf-home"
+  # HuggingFace model cache — baked into the executor image at /opt/hf-cache
+  spark.executorEnv.HF_HOME: "/opt/hf-cache"
+  spark.executorEnv.TRANSFORMERS_CACHE: "/opt/hf-cache"
+  spark.executorEnv.HF_HUB_OFFLINE: "1"
+  spark.executorEnv.HF_DATASETS_OFFLINE: "1"
   # SQL / Arrow
   spark.ui.enabled: "false"
   spark.eventLog.enabled: "true"

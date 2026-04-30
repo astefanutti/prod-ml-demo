@@ -1,19 +1,9 @@
-# Training image — rec-trainer + llm-trainer
-# Installed with: uv pip install --python python3.12 --no-cache -r training.txt
-torch>=2.5.0
-datasets>=3.0.0
-pandas>=2.0.0
-pyarrow>=14.0.0
-s3fs>=2024.2.0
-fsspec>=2024.2.0
-transformers>=4.45.0
-peft>=0.13.0
-trl>=0.12.0
-bitsandbytes>=0.44.0
-accelerate>=1.0.0
-sentencepiece>=0.2.0
-mlflow>=2.15.0
-# Feast SparkOfflineStore — for get_historical_features() in train.py (--use-feast)
-# pyspark>=4.0.0 is required by feast[spark]==0.62.0; runs local[*] inside the pod
+# Training image — deps installed on top of the RHOAI official base image.
+# Base image (quay.io/opendatahub/odh-th06-cuda130-torch291-py312:odh-3.4) already includes:
+#   torch, pandas, pyarrow, s3fs, fsspec, mlflow (3.10.1+rhaiv.2), datasets,
+#   transformers, peft, trl, bitsandbytes, accelerate, sentencepiece, deepspeed,
+#   flash-attn, xformers, numpy, scipy, scikit-learn, aiohttp, aiobotocore
+#
+# Only packages NOT in the base:
 pyspark==4.0.0
 feast==0.62.0

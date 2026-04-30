@@ -61,7 +61,7 @@ spec:
     spark.sql.shuffle.partitions: "200"
     # S3A connector JARs — served from MinIO (no Maven download needed, works in air-gapped clusters)
     # Upload once with: oc apply -f infrastructure/openshift/upload-spark-jars-job.yaml
-    spark.jars: "http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
+    spark.jars: "http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
     # No spark.plugins set → RAPIDS JAR in /opt/spark/jars/ is ignored → pure CPU run
     # Observability — same config as RAPIDS job for apples-to-apples comparison
     spark.ui.prometheus.enabled: "true"

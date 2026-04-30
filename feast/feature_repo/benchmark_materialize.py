@@ -54,9 +54,9 @@ else:
     )
 
 FEATURE_REPO  = "/feast-data/smartshop/feast/feature_repo"
-REDIS_HOST    = "redis.smartshop.svc.cluster.local"
-REDIS_PORT    = 6379
-REDIS_PASS    = os.environ.get("REDIS_PASSWORD", "smartshop-redis-2026")
+REDIS_HOST    = os.environ.get("REDIS_HOST", "redis.smartshop.svc.cluster.local")
+REDIS_PORT    = int(os.environ.get("REDIS_PORT", "6379"))
+REDIS_PASS    = os.environ.get("REDIS_PASSWORD", "")
 SPARK_UI_PORT = 4040
 START_DATE    = datetime(2010, 1, 1, tzinfo=timezone.utc)
 END_DATE      = datetime.now(tz=timezone.utc)
@@ -104,7 +104,7 @@ builder = (
     .config("spark.sql.shuffle.partitions",                "200")
     .config("spark.sql.execution.arrow.pyspark.enabled",   "true")
     .config("spark.hadoop.fs.s3a.endpoint",
-            "http://minio.smartshop.svc.cluster.local:9000")
+            os.environ.get("MINIO_ENDPOINT", "http://minio.smartshop.svc.cluster.local:9000"))
     .config("spark.hadoop.fs.s3a.path.style.access",       "true")
     .config("spark.hadoop.fs.s3a.impl",
             "org.apache.hadoop.fs.s3a.S3AFileSystem")

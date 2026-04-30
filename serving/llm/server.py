@@ -10,11 +10,27 @@ Usage (local testing):
 
 import argparse
 import os
+import time
 from contextlib import asynccontextmanager
 
 import fsspec
 from fastapi import FastAPI
+from prometheus_client import Counter, Histogram, make_asgi_app
 from pydantic import BaseModel
+
+REQUEST_DURATION = Histogram(
+    "smartshop_llm_request_duration_seconds", "Generation latency",
+    ["endpoint"],
+    buckets=[.1, .25, .5, 1, 2.5, 5, 10, 30],
+)
+TOKENS_GENERATED = Histogram(
+    "smartshop_llm_tokens_generated", "Output tokens per request",
+    ["endpoint"],
+    buckets=[10, 25, 50, 100, 200, 512],
+)
+REQUESTS_TOTAL = Counter(
+    "smartshop_llm_requests_total", "Total LLM requests", ["endpoint", "status"],
+)
 
 _model = None
 _tokenizer = None
@@ -56,6 +72,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="SmartShop Review Summarizer", lifespan=lifespan)
+app.mount("/metrics", make_asgi_app())
 
 
 class SummarizeRequest(BaseModel):
@@ -98,28 +115,46 @@ def _generate(prompt: str, max_new_tokens: int, temperature: float) -> str:
 
 @app.post("/v1/summarize", response_model=SummarizeResponse)
 def summarize(request: SummarizeRequest):
-    prompt = (
-        f"[INST] Summarize the following product review in 1-2 sentences. "
-        f"Include the overall sentiment (positive/negative/neutral).\n\n"
-        f"Product: {request.product_name}\n"
-        f"Review: {request.review_text} [/INST]"
-    )
+    t0 = time.perf_counter()
+    try:
+        prompt = (
+            f"[INST] Summarize the following product review in 1-2 sentences. "
+            f"Include the overall sentiment (positive/negative/neutral).\n\n"
+            f"Product: {request.product_name}\n"
+            f"Review: {request.review_text} [/INST]"
+        )
 
-    response = _generate(prompt, request.max_length, temperature=0.3)
-    response_lower = response.lower()
-    sentiment = (
-        "positive" if "positive" in response_lower
-        else "negative" if "negative" in response_lower
-        else "neutral"
-    )
-    return SummarizeResponse(summary=response.strip(), sentiment=sentiment)
+        response = _generate(prompt, request.max_length, temperature=0.3)
+        TOKENS_GENERATED.labels(endpoint="summarize").observe(len(response.split()))
+        response_lower = response.lower()
+        sentiment = (
+            "positive" if "positive" in response_lower
+            else "negative" if "negative" in response_lower
+            else "neutral"
+        )
+        REQUESTS_TOTAL.labels(endpoint="summarize", status="ok").inc()
+        return SummarizeResponse(summary=response.strip(), sentiment=sentiment)
+    except Exception as e:
+        REQUESTS_TOTAL.labels(endpoint="summarize", status="error").inc()
+        raise e
+    finally:
+        REQUEST_DURATION.labels(endpoint="summarize").observe(time.perf_counter() - t0)
 
 
 @app.post("/v1/completions", response_model=CompletionResponse)
 def completions(request: CompletionRequest):
     """OpenAI-compatible endpoint — called by rag/server.py and integration tests."""
-    text = _generate(request.prompt, request.max_tokens, request.temperature)
-    return CompletionResponse(choices=[{"text": text, "finish_reason": "stop"}])
+    t0 = time.perf_counter()
+    try:
+        text = _generate(request.prompt, request.max_tokens, request.temperature)
+        TOKENS_GENERATED.labels(endpoint="completions").observe(len(text.split()))
+        REQUESTS_TOTAL.labels(endpoint="completions", status="ok").inc()
+        return CompletionResponse(choices=[{"text": text, "finish_reason": "stop"}])
+    except Exception as e:
+        REQUESTS_TOTAL.labels(endpoint="completions", status="error").inc()
+        raise e
+    finally:
+        REQUEST_DURATION.labels(endpoint="completions").observe(time.perf_counter() - t0)
 
 
 @app.get("/health")

@@ -43,7 +43,7 @@ class ItemTower(nn.Module):
     def __init__(
         self,
         num_items: int,
-        item_feat_dim: int = 8,
+        item_feat_dim: int = 6,
         embed_dim: int = 64,
         hidden_dim: int = 128,
     ):
@@ -74,7 +74,7 @@ class TwoTowerModel(nn.Module):
         num_users: int,
         num_items: int,
         user_feat_dim: int = 6,
-        item_feat_dim: int = 8,
+        item_feat_dim: int = 6,
         embed_dim: int = 64,
         hidden_dim: int = 128,
     ):

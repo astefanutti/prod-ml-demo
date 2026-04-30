@@ -48,7 +48,7 @@ offline_store:
     spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
     # s3a MinIO access
     # (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY from feast-s3-credentials secret)
-    spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT}"
     spark.hadoop.fs.s3a.path.style.access: "true"
     spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
     spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
@@ -92,7 +92,7 @@ batch_engine:
   spark.sql.execution.arrow.fallback.enabled: "true"
   spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
   # s3a MinIO — same credentials as SparkApplications
-  spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+  spark.hadoop.fs.s3a.endpoint: "${MINIO_ENDPOINT}"
   spark.hadoop.fs.s3a.path.style.access: "true"
   spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
   spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
@@ -102,7 +102,7 @@ batch_engine:
 
 online_store:
   type: redis
-  connection_string: "redis.smartshop.svc.cluster.local:6379,password=smartshop-redis-2026"
+  connection_string: "${REDIS_HOST}:${REDIS_PORT},password=${REDIS_PASSWORD}"
 
 entity_key_serialization_version: 3
 

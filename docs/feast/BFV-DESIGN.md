@@ -594,39 +594,39 @@ Spark shuffle partitions: 400
 
 The SmartShop namespace runs the full ML stack across CPU and GPU nodes simultaneously:
 
-![Full stack pods running](assets/openshift-full-stack-pods-running.png)
+![Full stack pods running](../assets/openshift-full-stack-pods-running.png)
 *All SmartShop components running: Feast, MinIO, Redis, Grafana, Spark History Server, MLflow, Milvus*
 
-![Spark executor pods during run](assets/openshift-spark-executor-pods.png)
+![Spark executor pods during run](../assets/openshift-spark-executor-pods.png)
 *4 pyspark-shell executor pods active during distributed Feast materialization*
 
-![RAPIDS driver pod](assets/openshift-rapids-driver-running.png)
+![RAPIDS driver pod](../assets/openshift-rapids-driver-running.png)
 *Feast pod acting as Spark driver in k8s:// client mode*
 
 ---
 
 ### CPU Run — Executor Evidence
 
-![CPU executor pods in OC](assets/cpu-run-oc-executor-pods.png)
+![CPU executor pods in OC](../assets/cpu-run-oc-executor-pods.png)
 *4 CPU executor pods (`pyspark-shell-...-exec-{1..4}`) running in the smartshop namespace during CPU baseline run*
 
-![CPU executor startup log](assets/cpu-run-executor-log-startup.png)
+![CPU executor startup log](../assets/cpu-run-executor-log-startup.png)
 *Executor startup: registering with driver at `feast-spark-driver.smartshop.svc.cluster.local:7078`, no custom GPU resources*
 
-![CPU executor Parquet scan](assets/cpu-run-executor-log-parquet-scan.png)
+![CPU executor Parquet scan](../assets/cpu-run-executor-log-parquet-scan.png)
 *Stage 1 — Parquet files scanned from `s3a://smartshop-raw/raw/reviews/` across multiple category subdirectories*
 
 ---
 
 ### RAPIDS Run — Executor Evidence
 
-![RAPIDS executor pods in OC](assets/rapids-run-oc-executor-pods.png)
+![RAPIDS executor pods in OC](../assets/rapids-run-oc-executor-pods.png)
 *4 GPU executor pods running on GPU node (nvidia.com/gpu.present=true), higher memory footprint vs CPU pods*
 
-![RAPIDS GPU memory pool init](assets/rapids-run-executor-log-gpu-memory-pool.png)
+![RAPIDS GPU memory pool init](../assets/rapids-run-executor-log-gpu-memory-pool.png)
 *RAPIDS SQL plugin initialising: `GpuDeviceManager`, ~81GB GPU memory class discovered on A100-SXM4-80GB*
 
-![RAPIDS task execution](assets/rapids-run-executor-log-rapids-tasks.png)
+![RAPIDS task execution](../assets/rapids-run-executor-log-rapids-tasks.png)
 *`com.nvidia.spark.rapids.*` stack trace: GPU-accelerated SQL operators executing shuffle + aggregation stages*
 
 ---
@@ -635,32 +635,32 @@ The SmartShop namespace runs the full ML stack across CPU and GPU nodes simultan
 
 Dashboard: **SmartShop GPU Performance (RAPIDS vs CPU)**
 
-![GPU 30% util, 75GB VRAM](assets/grafana-rapids-gpu-30pct-75gb-vram.png)
+![GPU 30% util, 75GB VRAM](../assets/grafana-rapids-gpu-30pct-75gb-vram.png)
 *Mid-run: GPU utilization ~30%, ~75 GB VRAM allocated across 4 A100 executors. SM active, DRAM bandwidth engaged.*
 
-![GPU burst phase](assets/grafana-rapids-gpu-burst.png)
+![GPU burst phase](../assets/grafana-rapids-gpu-burst.png)
 *GPU activity burst during the shuffle/groupBy phase — highest GPU utilization point of the run*
 
-![GPU full run timeline](assets/grafana-rapids-gpu-full-run.png)
+![GPU full run timeline](../assets/grafana-rapids-gpu-full-run.png)
 *Full RAPIDS run GPU timeline: idle → ramp → plateau (~75GB VRAM) → teardown*
 
-![VRAM teardown at run end](assets/grafana-rapids-gpu-vram-teardown.png)
+![VRAM teardown at run end](../assets/grafana-rapids-gpu-vram-teardown.png)
 *End of RAPIDS run: VRAM drops from ~80GB back to near-zero as executor pods terminate*
 
-![GPU power + executor + Redis combined](assets/grafana-rapids-gpu-power-executor-redis.png)
+![GPU power + executor + Redis combined](../assets/grafana-rapids-gpu-power-executor-redis.png)
 *Combined view: GPU power consumption (top), executor pod CPU/memory (middle), Redis keys accumulating (bottom)*
 
-![GPU power + Redis 15M keys](assets/grafana-rapids-power-redis-15m-keys.png)
+![GPU power + Redis 15M keys](../assets/grafana-rapids-power-redis-15m-keys.png)
 *~15.6M Redis keys written, GPU power curve sustained, executor memory stable at ~14GB heap*
 
 From earlier exploratory RAPIDS runs (smaller dataset / pre-fix):
 
-![GPU activity early run](assets/grafana-gpu-activity-early-run.png)
-![GPU memory midrun spike](assets/grafana-gpu-memory-midrun-spike.png)
-![GPU all metrics during run](assets/grafana-gpu-all-metrics-during-run.png)
+![GPU activity early run](../assets/grafana-gpu-activity-early-run.png)
+![GPU memory midrun spike](../assets/grafana-gpu-memory-midrun-spike.png)
+![GPU all metrics during run](../assets/grafana-gpu-all-metrics-during-run.png)
 *Earlier RAPIDS run: GPU util spikes correlate with shuffle stages, VRAM peaks at ~75GB*
 
-![RAPIDS completed — GPU memory released](assets/grafana-rapids-completed-gpu-memory-released.png)
+![RAPIDS completed — GPU memory released](../assets/grafana-rapids-completed-gpu-memory-released.png)
 *Post-completion: GPU memory fully released*
 
 ---
@@ -669,35 +669,35 @@ From earlier exploratory RAPIDS runs (smaller dataset / pre-fix):
 
 The unified "Spark Executor Pod Metrics" panel shows both CPU and RAPIDS runs on one timeline:
 
-![Executor CPU/mem/OOM/Redis — both runs](assets/grafana-executor-cpu-mem-oom-redis-both.png)
+![Executor CPU/mem/OOM/Redis — both runs](../assets/grafana-executor-cpu-mem-oom-redis-both.png)
 *Both runs visible: executor CPU cores consumed, memory working set, OOM restarts (0 for both), Redis keys*
 
-![Executor metrics + Redis rising](assets/grafana-executor-metrics-redis-rising.png)
+![Executor metrics + Redis rising](../assets/grafana-executor-metrics-redis-rising.png)
 *Early in RAPIDS run: 4 executor pods consuming CPU + RAM, Redis key count beginning to ramp*
 
-![Executor metrics — Redis 5M keys](assets/grafana-executor-metrics-redis-5m-keys.png)
+![Executor metrics — Redis 5M keys](../assets/grafana-executor-metrics-redis-5m-keys.png)
 *Redis ramp continuing through user_features write phase (~5M keys)*
 
-![Executor metrics — Redis 8M keys](assets/grafana-executor-metrics-redis-8m-keys.png)
+![Executor metrics — Redis 8M keys](../assets/grafana-executor-metrics-redis-8m-keys.png)
 *~8.4M keys written, executor memory stable at ~14GB working set*
 
-![Executor metrics — Redis 12M keys](assets/grafana-executor-metrics-redis-12m-keys.png)
+![Executor metrics — Redis 12M keys](../assets/grafana-executor-metrics-redis-12m-keys.png)
 *12M+ keys, transitioning from user_features to item_features write stage*
 
 ---
 
 ### Grafana — CPU Run Metrics
 
-![CPU executor full window](assets/grafana-cpu-executor-full-window.png)
+![CPU executor full window](../assets/grafana-cpu-executor-full-window.png)
 *CPU run: executor pod CPU/memory over full 11m26s duration. Stable 14GB working set, 0 OOM kills.*
 
-![CPU executor 14M keys](assets/grafana-cpu-executor-mem-redis-14m-keys.png)
+![CPU executor 14M keys](../assets/grafana-cpu-executor-mem-redis-14m-keys.png)
 *CPU run mid-item_features: executor memory at ~13–14GB, Redis at 14M keys*
 
-![Full dashboard — CPU run](assets/grafana-full-dashboard-cpu-run.png)
+![Full dashboard — CPU run](../assets/grafana-full-dashboard-cpu-run.png)
 *Full "SmartShop GPU Performance" dashboard during CPU run: GPU panels idle (0% util, 0 VRAM), executor + Redis panels active. Clear visual separation between GPU and CPU mode.*
 
-![Redis feature store Grafana](assets/grafana-redis-feature-store-working.png)
+![Redis feature store Grafana](../assets/grafana-redis-feature-store-working.png)
 *Redis Feature Store dashboard: ops/sec, hit ratio, connected clients, memory usage during materialization*
 
 ---
@@ -707,13 +707,13 @@ The unified "Spark Executor Pod Metrics" panel shows both CPU and RAPIDS runs on
 URL: `spark-history-smartshop.<cluster-domain>`  
 Event logs: `s3a://smartshop-features/spark-events/`
 
-![Spark History — all completed apps](assets/spark-history-all-apps-completed.png)
+![Spark History — all completed apps](../assets/spark-history-all-apps-completed.png)
 *Spark History Server showing all completed materialization applications. Each `feast materialize` call = 2 Spark apps (user_features + item_features).*
 
-![Spark History — both CPU and RAPIDS runs](assets/spark-history-both-runs-completed.png)
+![Spark History — both CPU and RAPIDS runs](../assets/spark-history-both-runs-completed.png)
 *Both CPU and RAPIDS run apps visible side-by-side in history server*
 
-![RAPIDS app completed](assets/spark-history-rapids-completed-1h3m.png)
+![RAPIDS app completed](../assets/spark-history-rapids-completed-1h3m.png)
 *RAPIDS application completion record with duration*
 
 ---
@@ -722,51 +722,51 @@ Event logs: `s3a://smartshop-features/spark-events/`
 
 URL: `redisinsight-smartshop.<cluster-domain>`
 
-![RedisInsight — browse item features](assets/redisinsight-browse-item-features.png)
+![RedisInsight — browse item features](../assets/redisinsight-browse-item-features.png)
 *Browsing `item_features` keys: `smartshop:item_features:item_id:<asin>` — each key is a serialized feature vector*
 
-![RedisInsight — key detail](assets/redisinsight-browse-key-detail.png)
+![RedisInsight — key detail](../assets/redisinsight-browse-key-detail.png)
 *Individual feature key inspected: hash with fields `item_avg_rating`, `item_review_count`, etc.*
 
-![RedisInsight — 13M keys mid-run](assets/redisinsight-13m-keys-midrun.png)
+![RedisInsight — 13M keys mid-run](../assets/redisinsight-13m-keys-midrun.png)
 *Mid-RAPIDS run: 13.1M keys, 3.02 GB memory — user_features written, item_features in progress*
 
-![RedisInsight — 26.5M keys final](assets/redisinsight-26m-keys-final.png)
+![RedisInsight — 26.5M keys final](../assets/redisinsight-26m-keys-final.png)
 *Final state after successful run: **26,493,202 keys, 5.99 GB** — complete feature store for 35M+ reviews*
 
-![RedisInsight — analyze summary](assets/redisinsight-analyze-summary-clean.png)
+![RedisInsight — analyze summary](../assets/redisinsight-analyze-summary-clean.png)
 *Key analysis: all keys are Hash type, prefix distribution matches user_features + item_features namespacing*
 
-![RedisInsight — HSET slowlog](assets/redisinsight-hset-slowlog.png)
+![RedisInsight — HSET slowlog](../assets/redisinsight-hset-slowlog.png)
 *Slowlog showing HSET write bursts (48–75ms) during peak Redis pipeline throughput phases*
 
-![RedisInsight — slowlog commands](assets/redisinsight-slowlog-commands.png)
+![RedisInsight — slowlog commands](../assets/redisinsight-slowlog-commands.png)
 *Slowlog commands detail: HSET, HMGET patterns from Feast's Arrow serialization → Redis pipeline*
 
-![RedisInsight — HSET burst](assets/redisinsight-slowlog-hset-burst.png)
+![RedisInsight — HSET burst](../assets/redisinsight-slowlog-hset-burst.png)
 *HSET burst pattern: Feast writes in 10 concurrent pipelines (partitions=10), creating high-throughput write windows*
 
 ---
 
 ### RHOAI Feature Store UI
 
-![RHOAI Feast feature views list](assets/rhoai-feast-features-list.png)
+![RHOAI Feast feature views list](../assets/rhoai-feast-features-list.png)
 *RHOAI dashboard: registered feature views — `user_features` and `item_features` visible after `feast apply`*
 
-![RHOAI Feast data sources](assets/rhoai-feast-data-sources.png)
+![RHOAI Feast data sources](../assets/rhoai-feast-data-sources.png)
 *RHOAI Feature Store: data source registered — `raw_reviews_source` pointing to `s3a://smartshop-raw/raw/reviews/*/`*
 
-![RHOAI Feast lineage graph](assets/rhoai-feast-lineage-full.png)
+![RHOAI Feast lineage graph](../assets/rhoai-feast-lineage-full.png)
 *Full lineage graph: raw_reviews_source → user_features / item_features → Redis online store*
 
-![Feast feature views (CLI/UI)](assets/feast-feature-views-list.png)
-![Feast lineage post apply](assets/feast-lineage-post-apply.png)
+![Feast feature views (CLI/UI)](../assets/feast-feature-views-list.png)
+![Feast lineage post apply](../assets/feast-lineage-post-apply.png)
 
 ---
 
 ### MinIO — Raw Data
 
-![MinIO raw data loaded](assets/minio-raw-data-loaded.png)
+![MinIO raw data loaded](../assets/minio-raw-data-loaded.png)
 *MinIO bucket `smartshop-raw`: 29.6 GB raw Amazon Reviews Parquet files across category subdirectories*
 
 ---

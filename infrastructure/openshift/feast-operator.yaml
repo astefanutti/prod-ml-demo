@@ -14,7 +14,7 @@
 #   envsubst < infrastructure/openshift/feast-operator.yaml | oc apply -f -
 #
 # After pod Ready, run feast apply + feast materialize-incremental via oc exec.
-# See docs/FEAST-BFV-DESIGN.md for the full workflow and scripts/wait-and-materialize.sh.
+# See docs/feast/BFV-DESIGN.md for the full workflow and scripts/wait-and-materialize.sh.
 apiVersion: feast.dev/v1
 kind: FeatureStore
 metadata:

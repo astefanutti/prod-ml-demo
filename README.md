@@ -4,7 +4,7 @@
 
 This repository is a **fully deployable, end-to-end ML platform** for an e-commerce use case. It is designed for ML platform engineers and data scientists who want to see exactly how production-grade distributed training, feature engineering, and model serving fit together on OpenShift AI — with real infrastructure manifests, real data, and real performance numbers.
 
-**Technologies demonstrated:** PyTorch Distributed (DDP + FSDP), Kubeflow Trainer v2, Apache Spark + RAPIDS GPU acceleration, Feast Feature Store, Slurm/Slinky, MLflow, RHOAI Model Registry, KServe.
+**Technologies demonstrated:** PyTorch Distributed (DDP + QLoRA/FSDP), Kubeflow Trainer v2, Apache Spark + RAPIDS GPU acceleration, Feast Feature Store, MLflow, RHOAI Model Registry, KServe.
 
 ---
 
@@ -24,7 +24,7 @@ This repository is a **fully deployable, end-to-end ML platform** for an e-comme
 SmartShop AI is a production e-commerce ML platform that:
 
 1. **Recommends products** using a PyTorch two-tower model trained on 140M purchase interactions (DDP on K8s, 4× A100 GPUs)
-2. **Summarizes reviews** using Mistral-7B fine-tuned with QLoRA + FSDP across 2 nodes via Slurm
+2. **Summarizes reviews** using Mistral-7B fine-tuned with QLoRA + FSDP on K8s (4× A100 GPUs)
 3. **Answers product questions** via RAG over 104M review embeddings stored in Feast's vector store
 
 ## Architecture
@@ -124,7 +124,7 @@ flowchart TD
 | Raw dataset processed by Spark | **49 GB**, 140M+ reviews across 3 categories |
 | ETL speedup with RAPIDS on A100s | **1.51× overall** (1.74× peak on item aggregation) — I/O-bound on MinIO; compute-bound workloads see larger gains |
 | GPU parallelism — recommendation model | **4 GPUs × 1 node**, PyTorch DDP (`torchrun`) |
-| GPU parallelism — LLM fine-tuning | **8 GPUs × 2 nodes**, PyTorch FSDP via Slurm gang scheduling |
+| GPU parallelism — LLM fine-tuning | **4 GPUs × 1 node**, PyTorch FSDP + QLoRA via Kubeflow TrainJob |
 | Mistral-7B full fine-tune GPU RAM | ~112 GB — impossible on a single A100 |
 | Mistral-7B with QLoRA (r=16) | **~24 GB** — fits on one A100, adapter is ~1% of model size |
 | Feature lookup latency at serving time | **< 1 ms** — Redis online store, pre-materialized per-user |
@@ -139,8 +139,8 @@ MinIO is the only data store. Spark writes Parquet there → Feast reads from th
 **Zero training/serving skew.**
 Feast feature views are defined once in `feast/feature_repo/features.py`. The exact same schema used to build the training dataset via `feast materialize` is used at inference time via `get_online_features`. There is no separate "prod feature logic" that can drift from training.
 
-**FSDP needs gang scheduling — Slurm delivers it.**
-Multi-node FSDP requires all worker pods to start simultaneously with topology-aware placement (NVLink within node, InfiniBand between nodes). Kubernetes Job scheduling doesn't guarantee this. Slurm does. The Kubeflow Trainer TrainJob dispatches to Slurm via the Slinky operator — `sbatch` under the hood, Kubernetes API on top.
+**FSDP shards the model across GPUs.**
+QLoRA quantizes the base model to 4-bit and trains LoRA adapters. FSDP shards optimizer state and gradients across GPUs. On a single node with 4× A100 80GB, this fits Mistral-7B comfortably. Multi-node FSDP is supported by the training script but not required for the demo.
 
 **QLoRA makes LLM fine-tuning accessible.**
 Fine-tuning all 14B parameters of Mistral-7B requires ~112 GB of GPU RAM. QLoRA freezes the base model weights and trains low-rank adapter matrices (r=16, ~70M parameters). Memory drops to ~24 GB. The adapter checkpoint is ~270 MB vs ~28 GB for a full fine-tune. Training time drops proportionally.
@@ -151,8 +151,8 @@ The RAPIDS variant (`spark-application-rapids.yaml`) uses the same Python featur
 **MLflow → Model Registry → KServe: zero re-upload.**
 MLflow logs model artifacts to `s3://smartshop-models/<run-id>/`. The RHOAI Model Registry registers a pointer to that exact S3 path — no copy. KServe reads `storageUri: s3://smartshop-models/<run-id>/` at pod startup — no copy. The same bytes written during training are what the endpoint serves.
 
-**Slurm workers default to zero replicas.**
-GPU nodes are expensive. Slurm worker pods (`NodeSet`) are scaled to 0 when not training. Scale up to 2 nodes for the FSDP demo segment, scale back down immediately after. The Slinky operator makes this a single `oc patch` command.
+**Slurm integration is optional.**
+Slinky/Slurm is deployed on the cluster but not currently used for training. Kubeflow Trainer does not yet have native Slurm runtime support (upstream issue #2249). Both training jobs run as plain K8s TrainJobs. Slurm workers are scaled to 0 to avoid idle GPU consumption.
 
 ---
 
@@ -240,7 +240,7 @@ make feast-materialize     # pushes Parquet features → Redis + Milvus
 
 # 6. Submit distributed training jobs
 make train-rec-k8s         # Two-Tower recommendation model — PyTorch DDP, Kubeflow TrainJob
-make train-llm-slurm       # Mistral-7B QLoRA fine-tuning — FSDP, 2 nodes via Slurm
+make train-llm-k8s         # Mistral-7B QLoRA fine-tuning — FSDP on K8s, Kubeflow TrainJob
 
 # 7. Deploy all 3 KServe InferenceServices
 make serve-k8s             # recommendation + review summary + RAG Q&A endpoints
@@ -315,8 +315,7 @@ prod-ml-demo/
 | **Apache Spark** | ETL, feature engineering, embeddings | 49GB of reviews can't be processed in pandas |
 | **RAPIDS** | GPU-accelerated Spark execution | Same Spark code, 1.51× faster on A100s (I/O-bound on MinIO; compute-bound gains are significantly higher) — zero code change, optional but demo-worthy |
 | **Feast** | Feature store + vector store | Same features for train/serve (no skew); vector store for RAG |
-| **Kubeflow Trainer** | Distributed training orchestration | Two TrainJobs: DDP rec model + FSDP LLM |
-| **Slurm** | HPC GPU scheduling for LLM | Multi-node FSDP needs gang scheduling + topology awareness |
+| **Kubeflow Trainer** | Distributed training orchestration | Two TrainJobs: DDP rec model + QLoRA/FSDP LLM |
 | **MLflow** | Experiment tracking | Logs metrics/params/artifacts per run; shares artifact path with RHOAI Model Registry |
 | **RHOAI Model Registry** | Model versioning + serving lifecycle | Promotes trained artifacts to KServe; shares S3 artifact path with MLflow |
 | **KServe** | Model serving | Three autoscaling endpoints |
@@ -334,6 +333,6 @@ prod-ml-demo/
 This project extends the [Red Hat AI Quickstart for Product Recommender](https://developers.redhat.com/articles/2026/01/20/ai-quickstart-product-recommender-openshift-ai) by adding:
 - Large-scale Spark preprocessing (+ optional RAPIDS GPU acceleration)
 - Distributed training with Kubeflow Trainer
-- LLM fine-tuning with FSDP on Slurm
+- LLM fine-tuning with QLoRA + FSDP on K8s
 - RAG with Feast vector store
 - MLflow experiment tracking alongside RHOAI Model Registry
