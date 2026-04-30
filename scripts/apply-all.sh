@@ -15,8 +15,10 @@
 #   observability Grafana, redis_exporter, Spark metrics ConfigMap, collect script
 #   spark         Submit all 3 Spark ETL jobs (feature engineering, text preprocessing)
 #   feast         feast apply inside pod + redis secret patch
-#   training      TrainingRuntime + submit rec TrainJob (after spark completes)
+#   embeddings    Milvus embeddings via SparkApp + Feast materialize job
+#   training      TrainingRuntime + Notebook CR (papermill: rec → llm → serving)
 #   serving       Apply all 3 InferenceServices
+#   demo-ui       Deploy Gradio demo UI (Deployment + Service + Route)
 #   notebook      Create notebook ConfigMap + submit papermill runner job
 #   all           Everything above in order (default)
 #
@@ -161,8 +163,10 @@ phase_images() {
   apply "$REPO_ROOT/infrastructure/openshift/buildconfigs.yaml"
   ok "BuildConfigs applied — builds auto-start from git"
   echo "  Monitor: oc get builds -n $NAMESPACE -w"
-  echo "  All 6 must Complete before proceeding:"
-  echo "    spark-jobs, spark-jobs-rapids, feast-spark-server, rec-trainer, llm-trainer, rec-server"
+  echo "  All 11 must Complete before proceeding:"
+  echo "    spark-jobs, spark-jobs-rapids, feast-spark-server, feast-spark-executor,"
+  echo "    feast-spark-executor-rapids, feast-spark-executor-embeddings,"
+  echo "    rec-trainer, llm-trainer, rec-server, rag-server, demo-ui"
 }
 
 # ── Phase: data ───────────────────────────────────────────────────────────────
@@ -226,9 +230,9 @@ phase_spark() {
   ok "text_preprocessing script ConfigMap"
 
   oc create configmap smartshop-embedding-script \
-    --from-file=embedding_generation.py="$REPO_ROOT/spark/embedding_generation.py" \
+    --from-file=embed_to_milvus.py="$REPO_ROOT/spark/embed_to_milvus.py" \
     -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
-  ok "embedding_generation script ConfigMap"
+  ok "embed_to_milvus script ConfigMap"
 
   # Fixed mlflow_metrics.py (Python 3.8 compat + MLflow auth guard)
   # Mounted into RAPIDS/cpu-baseline driver/executor pods to override the baked-in version
@@ -326,15 +330,45 @@ print(base64.b64encode(s.encode()).decode())
   echo "    feast materialize-incremental \$(date -u +%Y-%m-%dT%H:%M:%S)'"
 }
 
+# ── Phase: embeddings ─────────────────────────────────────────────────────────
+phase_embeddings() {
+  log "Phase: embeddings (Milvus vector store via Feast)"
+
+  # Feature repo ConfigMap (features.py + features_milvus.py + feature_store_milvus.yaml)
+  oc create configmap smartshop-feast-feature-repo \
+    --from-file=features.py="$REPO_ROOT/feast/feature_repo/features.py" \
+    --from-file=features_milvus.py="$REPO_ROOT/feast/feature_repo/features_milvus.py" \
+    --from-file=feature_store_milvus.yaml="$REPO_ROOT/feast/feature_repo/feature_store_milvus.yaml" \
+    -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
+  ok "smartshop-feast-feature-repo ConfigMap"
+
+  # Service CA ConfigMap (Feast registry TLS cert)
+  apply "$REPO_ROOT/infrastructure/openshift/service-ca-configmap.yaml" || \
+    echo "  ⚠  service-ca-configmap: may already exist or require annotation"
+
+  # Embedding SparkApplication
+  apply "$REPO_ROOT/infrastructure/openshift/spark-application-embedding.yaml"
+  ok "Embedding SparkApplication submitted"
+  echo "  Wait: oc get sparkapplication -n $NAMESPACE -w"
+  echo "  Logs: oc logs -n $NAMESPACE smartshop-embed-to-milvus-driver -f"
+
+  echo ""
+  echo "  After SparkApp completes, run the Feast materialize job:"
+  echo "    envsubst < infrastructure/openshift/feast-materialize-embeddings-job.yaml | oc apply -f -"
+  echo "    oc logs -n $NAMESPACE job/feast-materialize-embeddings -f"
+}
+
 # ── Phase: training ───────────────────────────────────────────────────────────
+# Uses Notebook CR + Papermill to run training notebooks sequentially:
+#   01_training_rec.ipynb → 02_training_llm.ipynb → 03_serving.ipynb
+# The notebooks themselves submit TrainJobs via Kubeflow SDK and wait for completion.
 phase_training() {
   log "Phase: training"
 
-  # Apply TrainingRuntime + ClusterTrainingRuntime (without TrainJobs)
+  # 1. Apply TrainingRuntime (needed by TrainJobs the notebooks submit)
   python3 -c "
 content = open('$REPO_ROOT/infrastructure/openshift/trainjobs.yaml').read()
-import re, os
-# Load env
+import re
 env = {}
 for line in open('$REPO_ROOT/.env'):
     line = line.strip()
@@ -354,21 +388,28 @@ for doc in content.split('---'):
 " | oc apply -f -
   ok "TrainingRuntime + ClusterTrainingRuntime applied"
 
-  # Render and save rec TrainJob for manual submission after Spark completes
-  render "$REPO_ROOT/infrastructure/openshift/trainjobs.yaml" \
-    > /tmp/trainjobs-rendered.yaml
-  python3 -c "
-content = open('/tmp/trainjobs-rendered.yaml').read()
-for doc in content.split('---'):
-    if 'kind: TrainJob' in doc and 'smartshop-rec-train' in doc:
-        print('---'); print(doc.strip())
-" > /tmp/rec-trainjob.yaml
-  ok "rec-trainjob.yaml saved to /tmp/rec-trainjob.yaml"
+  # 2. Create/update e2e-notebooks ConfigMap from local notebooks
+  oc create configmap e2e-notebooks \
+    --from-file=01_training_rec.ipynb="$REPO_ROOT/notebooks/01_training_rec.ipynb" \
+    --from-file=02_training_llm.ipynb="$REPO_ROOT/notebooks/02_training_llm.ipynb" \
+    --from-file=03_serving.ipynb="$REPO_ROOT/notebooks/03_serving.ipynb" \
+    -n "$NAMESPACE" --dry-run=client -o yaml | oc apply -f -
+  ok "e2e-notebooks ConfigMap"
+
+  # 3. Delete previous Notebook CR run if exists (name must be unique)
+  oc delete notebook smartshop-e2e-test -n "$NAMESPACE" --ignore-not-found=true
+
+  # 4. Deploy e2e Notebook CR (runs rec → llm → serving via Papermill)
+  render "$REPO_ROOT/infrastructure/openshift/e2e-notebook.yaml" | oc apply -f -
+  ok "Notebook CR smartshop-e2e-test deployed"
 
   echo ""
-  echo "  ⚠  Submit TrainJob AFTER feast materialize completes:"
-  echo "    oc apply -f /tmp/rec-trainjob.yaml"
-  echo "    oc get trainjob smartshop-rec-train -n $NAMESPACE -w"
+  echo "  Notebooks run sequentially: rec training → llm training → serving tests"
+  echo "  Watch: oc logs -n $NAMESPACE notebook/smartshop-e2e-test -c e2e-runner -f"
+  echo "  Status: look for 'NOTEBOOK_STATUS: SUCCESS' in logs"
+  echo ""
+  echo "  ⚠  Training takes ~1-2 hours depending on GPU availability"
+  echo "  ⚠  The Notebook pod sleeps after completion (Notebook CR restart loop prevention)"
 }
 
 # ── Phase: serving ────────────────────────────────────────────────────────────
@@ -385,6 +426,23 @@ phase_serving() {
   echo ""
   echo "  ⚠  LLM pod takes ~5 min (image pull + HF model download + CUDA graph capture)"
   echo "  ⚠  Rec pod needs rec-server image built first (make build-serving)"
+}
+
+# ── Phase: demo-ui ────────────────────────────────────────────────────────────
+phase_demo_ui() {
+  log "Phase: demo-ui"
+
+  apply "$REPO_ROOT/infrastructure/openshift/demo-ui.yaml"
+  ok "Demo UI Deployment + Service + Route applied"
+
+  echo "  Waiting for rollout..."
+  oc rollout status deployment/smartshop-demo-ui -n "$NAMESPACE" --timeout=120s || \
+    echo "  ⚠  Rollout not complete — check: oc get pods -n $NAMESPACE -l component=demo-ui"
+
+  DEMO_ROUTE=$(oc get route smartshop-demo-ui -n "$NAMESPACE" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+  if [[ -n "$DEMO_ROUTE" ]]; then
+    ok "Demo UI: https://$DEMO_ROUTE"
+  fi
 }
 
 # ── Phase: notebook ───────────────────────────────────────────────────────────
@@ -420,8 +478,10 @@ case "$PHASE" in
   observability) phase_observability ;;
   spark)         phase_spark ;;
   feast)         phase_feast ;;
+  embeddings)    phase_embeddings ;;
   training)      phase_training ;;
   serving)       phase_serving ;;
+  demo-ui)       phase_demo_ui ;;
   notebook)      phase_notebook ;;
   all)
     phase_infra
@@ -430,13 +490,15 @@ case "$PHASE" in
     phase_observability
     phase_spark
     phase_feast
+    phase_embeddings
     phase_training
     phase_serving
+    phase_demo_ui
     phase_notebook
     ;;
   *)
     echo "Unknown phase: $PHASE"
-    echo "Valid: infra images data observability spark feast training serving notebook all"
+    echo "Valid: infra images data observability spark feast embeddings training serving demo-ui notebook all"
     exit 1
     ;;
 esac

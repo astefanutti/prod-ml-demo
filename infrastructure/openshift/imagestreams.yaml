@@ -76,3 +76,32 @@ metadata:
 spec:
   lookupPolicy:
     local: true
+---
+# feast-spark-executor-embeddings: feast-spark-executor + sentence-transformers
+# k8s:// executor pods for embedding materialization
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: feast-spark-executor-embeddings
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: rag-server
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: demo-ui
+  namespace: ${NAMESPACE}
+spec:
+  lookupPolicy:
+    local: true

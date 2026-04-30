@@ -23,6 +23,7 @@
 #   3. Feature repo ConfigMap (sync feature_repo files into the cluster):
 #        oc create configmap smartshop-feast-feature-repo \
 #          --from-file=features.py=feast/feature_repo/features.py \
+#          --from-file=features_milvus.py=feast/feature_repo/features_milvus.py \
 #          --from-file=feature_store_milvus.yaml=feast/feature_repo/feature_store_milvus.yaml \
 #          -n smartshop --dry-run=client -o yaml | oc apply -f -
 #   4. Secret:       oc get secret smartshop-credentials -n smartshop  (must exist)
@@ -72,9 +73,10 @@ spec:
             - |
               # ── Build a self-contained feast repo dir in /tmp/feast-repo ────────────
               # feast apply infers the repo root from the directory of the -c config file.
-              # features.py must live alongside the config.
+              # Both features.py and features_milvus.py must live alongside the config.
               mkdir -p /tmp/feast-repo
               cp /feast-repo/features.py /tmp/feast-repo/features.py
+              cp /feast-repo/features_milvus.py /tmp/feast-repo/features_milvus.py
 
               # Render template vars (Python string.Template, no envsubst needed)
               python3 - <<'PYEOF'
@@ -155,7 +157,7 @@ spec:
             - name: MATERIALIZE_START
               value: "2023-06-01T00:00:00"
             - name: MATERIALIZE_END
-              value: "2023-06-08T00:00:00"
+              value: "2023-07-01T00:00:00"
 
             # ── Spark executor image (only used when SPARK_MASTER=k8s://) ─────────
             - name: SPARK_EXECUTOR_EMBEDDINGS_IMAGE

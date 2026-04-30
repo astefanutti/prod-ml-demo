@@ -51,13 +51,15 @@ async def lifespan(app: FastAPI):
     from feast.repo_config import load_repo_config
 
     _embed_model = SentenceTransformer(EMBEDDING_MODEL)
+
     feast_repo = os.environ.get("FEAST_REPO_PATH", "feast/feature_repo")
     feast_config = os.environ.get("FEAST_CONFIG", "feature_store_serving.yaml")
     config_path = os.path.join(feast_repo, feast_config)
     repo_config = load_repo_config(repo_path=feast_repo, fs_yaml_file=config_path)
     _feast_store = FeatureStore(config=repo_config)
+
     online_type = getattr(repo_config.online_store, "type", "unknown")
-    print(f"RAG server ready — online store: {online_type}")
+    print(f"RAG server ready — Feast online store: {online_type}")
     yield
 
 
@@ -95,19 +97,18 @@ def retrieve_similar_reviews(question: str, product_id: str, top_k: int) -> list
             distance_metric="COSINE",
         ).to_df()
 
-        # Optional: filter to a specific product if provided
-        if product_id and "review_embeddings__item_id" in result_df.columns:
-            product_df = result_df[result_df["review_embeddings__item_id"] == product_id]
+        if product_id and "item_id" in result_df.columns:
+            product_df = result_df[result_df["item_id"] == product_id]
             if not product_df.empty:
                 result_df = product_df
 
         sources = []
         for _, row in result_df.iterrows():
             sources.append({
-                "item_id": row.get("review_embeddings__item_id", ""),
-                "text": row.get("review_embeddings__embed_text", ""),
-                "rating": row.get("review_embeddings__rating", 0),
-                "title": row.get("review_embeddings__review_title", ""),
+                "item_id": row.get("item_id", ""),
+                "text": row.get("embed_text", ""),
+                "rating": row.get("rating", 0),
+                "title": row.get("review_title", ""),
             })
         return sources
     except Exception as e:

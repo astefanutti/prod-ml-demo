@@ -70,4 +70,4 @@ stringData:
       spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
       spark.hadoop.fs.s3a.connection.maximum: "100"
       spark.hadoop.fs.s3a.threads.max: "64"
-    staging_location: "s3://smartshop-features/feast-staging/"
+    staging_location: "s3://${S3_FEATURES_BUCKET}/feast-staging/"

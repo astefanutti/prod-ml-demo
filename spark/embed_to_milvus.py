@@ -70,18 +70,28 @@ def make_embedding_udf():
 
 
 def ensure_collection(client: MilvusClient, name: str):
+    """Ensure Feast-compatible Milvus collection exists.
+
+    If the collection already exists (e.g. created by feast apply), reuse it.
+    Otherwise create with Feast-compatible schema: review_id_pk (PK), event_ts,
+    created_ts, plus feature fields as VARCHAR (except embedding as FLOAT_VECTOR).
+    """
     if client.has_collection(name):
         stats = client.get_collection_stats(name)
-        print(f"Collection '{name}' exists: {stats}")
-        client.drop_collection(name)
-        print(f"Dropped existing collection for fresh load")
+        print(f"Collection '{name}' exists: {stats} — reusing (Feast-managed)")
+        return
 
     schema = CollectionSchema(fields=[
-        FieldSchema("review_id", DataType.VARCHAR, is_primary=True, max_length=64),
-        FieldSchema("item_id", DataType.VARCHAR, max_length=64),
-        FieldSchema("rating", DataType.FLOAT),
-        FieldSchema("embed_text", DataType.VARCHAR, max_length=1024),
+        FieldSchema("review_id_pk", DataType.VARCHAR, is_primary=True, max_length=512),
+        FieldSchema("event_ts", DataType.INT64),
+        FieldSchema("created_ts", DataType.INT64),
         FieldSchema("embedding", DataType.FLOAT_VECTOR, dim=EMBEDDING_DIM),
+        FieldSchema("rating", DataType.VARCHAR, max_length=512),
+        FieldSchema("embed_text", DataType.VARCHAR, max_length=512),
+        FieldSchema("user_id", DataType.VARCHAR, max_length=512),
+        FieldSchema("item_id", DataType.VARCHAR, max_length=512),
+        FieldSchema("review_title", DataType.VARCHAR, max_length=512),
+        FieldSchema("review_id", DataType.VARCHAR, max_length=512),
     ])
     client.create_collection(collection_name=name, schema=schema)
 
@@ -93,7 +103,7 @@ def ensure_collection(client: MilvusClient, name: str):
         params={"nlist": 128},
     )
     client.create_index(collection_name=name, index_params=idx_params)
-    print(f"Created collection '{name}' with IVF_FLAT COSINE index")
+    print(f"Created collection '{name}' with Feast-compatible schema + IVF_FLAT COSINE index")
 
 
 def _truncate_to_bytes(s: str, max_bytes: int = 1020) -> str:
@@ -107,19 +117,35 @@ def _truncate_to_bytes(s: str, max_bytes: int = 1020) -> str:
 def insert_to_milvus(client: MilvusClient, collection: str, df, batch_size: int):
     """Collect embeddings to driver and batch-insert into Milvus.
 
+    Writes in Feast-compatible format (review_id_pk, event_ts, created_ts + features).
     Uses toLocalIterator to stream rows without loading entire DF into memory.
     """
+    import hashlib
+
+    now_ts = int(time.time())
     total = 0
     buf = []
     for row in df.toLocalIterator():
         emb = list(row["embedding"]) if row["embedding"] else [0.0] * EMBEDDING_DIM
         text = str(row["embed_text"]) if row["embed_text"] else ""
+        review_id = str(row["review_id"])
+        item_id = str(row["item_id"]) if row["item_id"] else ""
+        user_id = str(row["user_id"]) if row["user_id"] else ""
+        review_title = str(row["review_title"]) if row["review_title"] else ""
+
+        pk = hashlib.sha256(review_id.encode()).hexdigest()[:64]
+
         buf.append({
-            "review_id": str(row["review_id"]),
-            "item_id": str(row["item_id"]) if row["item_id"] else "",
-            "rating": float(row["rating"]) if row["rating"] else 0.0,
-            "embed_text": _truncate_to_bytes(text),
+            "review_id_pk": pk,
+            "event_ts": now_ts,
+            "created_ts": now_ts,
             "embedding": emb,
+            "rating": str(row["rating"]) if row["rating"] else "0",
+            "embed_text": _truncate_to_bytes(text, max_bytes=508),
+            "user_id": user_id[:500],
+            "item_id": item_id[:500],
+            "review_title": review_title[:500],
+            "review_id": review_id[:500],
         })
         if len(buf) >= batch_size:
             client.insert(collection_name=collection, data=buf)
@@ -182,7 +208,9 @@ def main():
     df = df.select(
         F.monotonically_increasing_id().cast("string").alias("review_id"),
         F.col("parent_asin").alias("item_id"),
+        F.coalesce(F.col("user_id"), F.lit("")).alias("user_id"),
         F.col("rating").cast("float"),
+        F.coalesce(F.col("title"), F.lit("")).alias("review_title"),
         F.substring(F.col("embed_text"), 1, 500).alias("embed_text"),
     )
 

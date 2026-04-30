@@ -10,7 +10,6 @@ Endpoints:
 """
 
 import os
-import random
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -61,11 +60,14 @@ _user_to_idx: dict = {}
 _item_to_idx: dict = {}
 _idx_to_item: dict = {}
 _all_item_ids: list = []
+_all_item_embeddings: Optional[torch.Tensor] = None
+_all_item_indices: Optional[torch.Tensor] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _model, _user_to_idx, _item_to_idx, _idx_to_item, _all_item_ids
+    global _all_item_embeddings, _all_item_indices
 
     model_path = os.environ.get("MODEL_PATH", "models/recommendation/best_model.pt")
 
@@ -93,9 +95,14 @@ async def lifespan(app: FastAPI):
     _model.load_state_dict(state_dict)
     _model.eval()
 
+    with torch.no_grad():
+        _all_item_indices = torch.arange(n_items, dtype=torch.long)
+        _all_item_embeddings = _model.item_mlp(_model.item_embed(_all_item_indices))
+
     print(f"Model loaded: {n_users} users, {n_items} items, "
           f"embed_dim={embed_dim}, hidden_dim={hidden_dim}, "
-          f"mappings={'yes' if _user_to_idx else 'no'}")
+          f"mappings={'yes' if _user_to_idx else 'no'}, "
+          f"item_embeddings_precomputed={_all_item_embeddings.shape}")
     yield
 
 
@@ -122,34 +129,31 @@ def predict(request: RecommendRequest):
         else:
             user_idx = hash(request.user_id) % _model.user_embed.num_embeddings
 
-        if request.candidate_items:
-            candidates = request.candidate_items
-        elif _all_item_ids:
-            candidates = random.sample(_all_item_ids, min(200, len(_all_item_ids)))
-        else:
-            candidates = [str(i) for i in range(min(200, _model.item_embed.num_embeddings))]
-
-        if _item_to_idx:
-            item_indices = [_item_to_idx.get(iid, 0) for iid in candidates]
-        else:
-            item_indices = [hash(iid) % _model.item_embed.num_embeddings for iid in candidates]
-
-        user_ids_t = torch.tensor([user_idx] * len(candidates), dtype=torch.long)
-        item_ids_t = torch.tensor(item_indices, dtype=torch.long)
-
         with torch.no_grad():
-            logits = _model(user_ids_t, item_ids_t)
-            scores_t = torch.sigmoid(logits).tolist()
+            user_t = torch.tensor([user_idx], dtype=torch.long)
+            user_emb = _model.user_mlp(_model.user_embed(user_t))
 
-        scores = [
-            {"item_id": iid, "score": round(s, 4)}
-            for iid, s in zip(candidates, scores_t)
-        ]
-        scores.sort(key=lambda x: x["score"], reverse=True)
+            if request.candidate_items:
+                idxs = [_item_to_idx.get(iid, 0) for iid in request.candidate_items]
+                item_t = torch.tensor(idxs, dtype=torch.long)
+                item_embs = _model.item_mlp(_model.item_embed(item_t))
+                scores_t = torch.sigmoid((user_emb * item_embs).sum(dim=1))
+                item_ids = request.candidate_items
+            else:
+                scores_t = torch.sigmoid((user_emb * _all_item_embeddings).sum(dim=1))
+                item_ids = None
 
-        CANDIDATES_SCORED.observe(len(candidates))
+            top_k = min(request.top_k, scores_t.shape[0])
+            top_scores, top_indices = torch.topk(scores_t, top_k)
+
+        results = []
+        for score, idx in zip(top_scores.tolist(), top_indices.tolist()):
+            iid = item_ids[idx] if item_ids else _idx_to_item.get(idx, str(idx))
+            results.append({"item_id": iid, "score": round(score, 4)})
+
+        CANDIDATES_SCORED.observe(scores_t.shape[0])
         REQUESTS_TOTAL.labels(status="ok").inc()
-        return RecommendResponse(recommendations=scores[: request.top_k])
+        return RecommendResponse(recommendations=results)
     except Exception as e:
         REQUESTS_TOTAL.labels(status="error").inc()
         raise e

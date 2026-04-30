@@ -41,7 +41,7 @@ spec:
       serviceAccountName: grafana-sa
       containers:
         - name: grafana
-          image: grafana/grafana:10.4.2
+          image: ${GRAFANA_IMAGE:-grafana/grafana:10.4.2}
           ports:
             - containerPort: 3000
               name: http
@@ -162,7 +162,7 @@ data:
       - name: OCP-Thanos
         type: prometheus
         uid: ocp-thanos
-        url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091
+        url: ${THANOS_QUERIER_URL:-https://thanos-querier.openshift-monitoring.svc.cluster.local:9091}
         access: proxy
         isDefault: true
         jsonData:
@@ -175,7 +175,7 @@ data:
       - name: OCP-UserWorkload
         type: prometheus
         uid: ocp-uwm
-        url: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092
+        url: ${THANOS_QUERIER_UWM_URL:-https://thanos-querier.openshift-monitoring.svc.cluster.local:9092}
         access: proxy
         jsonData:
           httpMethod: POST
@@ -377,9 +377,9 @@ data:
           "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
           "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rec_requests_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "Rec Model"},
-            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:request_success_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "LLM (vLLM)"},
-            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rag_requests_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "RAG Q&A"}
+            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rec_requests_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "Rec Model"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:request_success_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "LLM (vLLM)"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rag_requests_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "RAG Q&A"}
           ]
         },
         {
@@ -387,7 +387,7 @@ data:
           "type": "gauge", "gridPos": {"x":12,"y":0,"w":6,"h":8},
           "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.7}, {"color": "red", "value": 0.9}]}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "vllm:kv_cache_usage_perc{namespace=\"smartshop\"}", "legendFormat": "KV cache"}
+            {"datasource": "ocp-thanos", "expr": "vllm:kv_cache_usage_perc{namespace=\"${NAMESPACE}\"}", "legendFormat": "KV cache"}
           ]
         },
         {
@@ -395,8 +395,8 @@ data:
           "type": "timeseries", "gridPos": {"x":18,"y":0,"w":6,"h":8},
           "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 15}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "vllm:num_requests_running{namespace=\"smartshop\"}", "legendFormat": "Running"},
-            {"datasource": "ocp-thanos", "expr": "vllm:num_requests_waiting{namespace=\"smartshop\"}", "legendFormat": "Waiting"}
+            {"datasource": "ocp-thanos", "expr": "vllm:num_requests_running{namespace=\"${NAMESPACE}\"}", "legendFormat": "Running"},
+            {"datasource": "ocp-thanos", "expr": "vllm:num_requests_waiting{namespace=\"${NAMESPACE}\"}", "legendFormat": "Waiting"}
           ]
         },
         {
@@ -404,9 +404,9 @@ data:
           "type": "timeseries", "gridPos": {"x":0,"y":8,"w":8,"h":8},
           "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p50"},
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p95"},
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.99, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p99"}
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p95"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.99, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p99"}
           ]
         },
         {
@@ -414,8 +414,8 @@ data:
           "type": "timeseries", "gridPos": {"x":8,"y":8,"w":8,"h":8},
           "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p50"},
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "p95"}
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p95"}
           ]
         },
         {
@@ -423,9 +423,9 @@ data:
           "type": "timeseries", "gridPos": {"x":16,"y":8,"w":8,"h":8},
           "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_retrieval_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "Retrieval (Milvus)"},
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_llm_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "LLM Generation"},
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_request_duration_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "Total"}
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_retrieval_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "Retrieval (Milvus)"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_llm_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "LLM Generation"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_request_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "Total"}
           ]
         },
         {
@@ -433,8 +433,8 @@ data:
           "type": "timeseries", "gridPos": {"x":0,"y":16,"w":8,"h":8},
           "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "TTFT p50"},
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "TTFT p95"}
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "TTFT p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "TTFT p95"}
           ]
         },
         {
@@ -442,8 +442,8 @@ data:
           "type": "timeseries", "gridPos": {"x":8,"y":16,"w":8,"h":8},
           "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:prompt_tokens_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "Prompt tokens/s"},
-            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:generation_tokens_total{namespace=\"smartshop\"}[1m]))", "legendFormat": "Generation tokens/s"}
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:prompt_tokens_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "Prompt tokens/s"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:generation_tokens_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "Generation tokens/s"}
           ]
         },
         {
@@ -451,8 +451,8 @@ data:
           "type": "timeseries", "gridPos": {"x":16,"y":16,"w":8,"h":8},
           "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:inter_token_latency_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "ITL p50"},
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:inter_token_latency_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "ITL p95"}
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:inter_token_latency_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "ITL p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:inter_token_latency_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "ITL p95"}
           ]
         },
         {
@@ -460,14 +460,14 @@ data:
           "type": "stat", "gridPos": {"x":0,"y":24,"w":6,"h":5},
           "fieldConfig": {"defaults": {"unit": "short"}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rec_candidates_scored_sum{namespace=\"smartshop\"}[5m])) / sum(rate(smartshop_rec_candidates_scored_count{namespace=\"smartshop\"}[5m]))", "legendFormat": "avg/request"}
+            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rec_candidates_scored_sum{namespace=\"${NAMESPACE}\"}[5m])) / sum(rate(smartshop_rec_candidates_scored_count{namespace=\"${NAMESPACE}\"}[5m]))", "legendFormat": "avg/request"}
           ]
         },
         {
           "id": 11, "title": "RAG — Sources Retrieved",
           "type": "stat", "gridPos": {"x":6,"y":24,"w":6,"h":5},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(smartshop_rag_sources_retrieved_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "median sources"}
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(smartshop_rag_sources_retrieved_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "median sources"}
           ]
         },
         {
@@ -475,7 +475,7 @@ data:
           "type": "stat", "gridPos": {"x":12,"y":24,"w":6,"h":5},
           "fieldConfig": {"defaults": {"unit": "short"}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:request_generation_tokens_sum{namespace=\"smartshop\"}[5m])) / sum(rate(vllm:request_generation_tokens_count{namespace=\"smartshop\"}[5m]))", "legendFormat": "avg tokens"}
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:request_generation_tokens_sum{namespace=\"${NAMESPACE}\"}[5m])) / sum(rate(vllm:request_generation_tokens_count{namespace=\"${NAMESPACE}\"}[5m]))", "legendFormat": "avg tokens"}
           ]
         },
         {
@@ -483,8 +483,8 @@ data:
           "type": "stat", "gridPos": {"x":18,"y":24,"w":6,"h":5},
           "fieldConfig": {"defaults": {"unit": "s"}},
           "targets": [
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:request_prefill_time_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "Prefill p95"},
-            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:request_decode_time_seconds_bucket{namespace=\"smartshop\"}[5m])) by (le))", "legendFormat": "Decode p95"}
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:request_prefill_time_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "Prefill p95"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:request_decode_time_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "Decode p95"}
           ]
         }
       ]

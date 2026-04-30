@@ -269,7 +269,7 @@ spec:
     serviceAccountName: smartshop-serving-sa
     initContainers:
       - name: adapter-download
-        image: registry.redhat.io/rhoai/odh-kserve-storage-initializer-rhel9@sha256:294c864d04f2ef1ba2fc2080f7eebc4d67252cce1282a46f6b416179264c8c00
+        image: ${KSERVE_STORAGE_INIT_IMAGE:-registry.redhat.io/rhoai/odh-kserve-storage-initializer-rhel9@sha256:294c864d04f2ef1ba2fc2080f7eebc4d67252cce1282a46f6b416179264c8c00}
         command: ["/bin/sh", "-c"]
         args:
           - |
@@ -347,7 +347,7 @@ spec:
         args: ["serving.rag.server:app", "--host", "0.0.0.0", "--port", "8000"]
         env:
           - name: MILVUS_HOST
-            value: milvus-standalone.${NAMESPACE}.svc.cluster.local
+            value: milvus.${NAMESPACE}.svc.cluster.local
           - name: MILVUS_PORT
             value: "19530"
           - name: LLM_URL
@@ -356,6 +356,8 @@ spec:
             value: /app/feast/feature_repo
           - name: FEAST_CONFIG
             value: feature_store_serving.yaml
+          - name: NAMESPACE
+            value: "${NAMESPACE}"
         volumeMounts:
           - name: feast-registry-tls
             mountPath: /var/run/secrets/feast-registry-tls
@@ -405,5 +407,5 @@ spec:
     matchNames: [${NAMESPACE}]
   endpoints:
     - port: http
-      path: /metrics/
+      path: /metrics
       interval: 15s
