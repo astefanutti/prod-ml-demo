@@ -1,170 +1,221 @@
 ---
-# TrainingRuntime for DDP recommendation training
-# Uses envFrom to pull all credentials + MLflow config from secrets.
-apiVersion: trainer.kubeflow.org/v1alpha1
-kind: TrainingRuntime
-metadata:
-  name: smartshop-rec-ddp
-  namespace: ${NAMESPACE}
-spec:
-  template:
-    spec:
-      replicatedJobs:
-        - name: worker
-          template:
-            spec:
-              template:
-                spec:
-                  containers:
-                    - name: trainer
-                      envFrom:
-                        - secretRef:
-                            name: smartshop-credentials
-                        - secretRef:
-                            name: smartshop-mlflow-token
-                      env:
-                        - name: FEAST_REPO_PATH
-                          value: "${FEAST_REPO_PATH}"
-                        # Feast remote registry — training pod reads feature defs from
-                        # feast server gRPC rather than direct PVC access
-                        - name: FEAST_REGISTRY_TYPE
-                          value: "${FEAST_REGISTRY_TYPE:-remote}"
-                        - name: FEAST_REGISTRY_PATH
-                          value: "${FEAST_REGISTRY_PATH:-feast-smartshop-feast-registry.smartshop.svc.cluster.local:6570}"
-                        - name: S3_ENDPOINT
-                          value: "${MINIO_ENDPOINT}"
-                        - name: AWS_ENDPOINT_URL_S3
-                          value: "${MINIO_ENDPOINT}"
-                        - name: AWS_DEFAULT_REGION
-                          value: "${AWS_DEFAULT_REGION}"
-                        - name: HF_HOME
-                          value: "${HF_HOME}"
-                        - name: NCCL_DEBUG
-                          value: "INFO"
-                      volumeMounts:
-                        - name: shm
-                          mountPath: /dev/shm
-                  volumes:
-                    - name: shm
-                      emptyDir:
-                        medium: Memory
-                        sizeLimit: "8Gi"
-
+# Standalone TrainJob manifests (alternative to notebook-based SDK submission).
+#
+# PREFERRED approach: Use notebooks/01_training_rec.ipynb and notebooks/02_training_llm.ipynb
+# via the e2e-notebook.yaml Kubeflow Notebook CR. The notebooks use the Kubeflow SDK
+# (CustomTrainer / TransformersTrainer) which automatically handles torchrun wrapping,
+# PET_* env injection, and progression tracking.
+#
+# These YAML TrainJobs are for cases where you want direct oc apply without notebooks.
+# They require custom trainer images with training scripts baked in.
+#
+# Usage:
+#   set -a && source .env && set +a
+#   envsubst < infrastructure/openshift/trainjobs.yaml | oc apply -f -
 ---
-# Kubeflow Trainer - Recommendation Model (DDP on K8s)
+# Kubeflow Trainer - Recommendation Model (DDP)
+# Uses built-in torch-distributed ClusterTrainingRuntime.
+# Controller injects PET_NNODES, PET_NODE_RANK, PET_MASTER_ADDR, PET_MASTER_PORT, PET_NPROC_PER_NODE.
 apiVersion: trainer.kubeflow.org/v1alpha1
 kind: TrainJob
 metadata:
   name: smartshop-rec-train
   namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: rec-training
 spec:
   runtimeRef:
-    name: smartshop-rec-ddp
+    name: torch-distributed
+    kind: ClusterTrainingRuntime
   trainer:
     image: ${REC_TRAINER_IMAGE}
-    command:
-      - torchrun
-    args:
-      - --nproc_per_node=${REC_GPUS_PER_NODE}
-      - training/recommendation/train.py
-      - --data-dir=s3://${S3_FEATURES_BUCKET}
-      - --output-dir=s3://${S3_MODELS_BUCKET}/recommendation
-      - --epochs=${REC_TRAIN_EPOCHS}
-      - --batch-size=${REC_TRAIN_BATCH_SIZE}
-      - --embed-dim=${REC_EMBED_DIM}
-      - --hidden-dim=${REC_HIDDEN_DIM}
     numNodes: ${REC_TRAIN_NODES}
+    numProcPerNode: ${REC_GPUS_PER_NODE}
     resourcesPerNode:
       requests:
         cpu: "16"
-        memory: "64Gi"
+        memory: "128Gi"
         nvidia.com/gpu: "${REC_GPUS_PER_NODE}"
       limits:
         cpu: "32"
-        memory: "128Gi"
+        memory: "256Gi"
         nvidia.com/gpu: "${REC_GPUS_PER_NODE}"
-
----
-# ClusterTrainingRuntime for FSDP LLM training dispatched to Slurm
-apiVersion: trainer.kubeflow.org/v1alpha1
-kind: ClusterTrainingRuntime
-metadata:
-  name: smartshop-llm-fsdp-slurm
-spec:
-  template:
+    command:
+    - bash
+    - -c
+    - |
+      set -e
+      echo "========================================"
+      echo "SMARTSHOP REC MODEL - MULTI-NODE DDP"
+      echo "PET_NNODES=$PET_NNODES PET_NODE_RANK=$PET_NODE_RANK"
+      echo "PET_MASTER_ADDR=$PET_MASTER_ADDR PET_MASTER_PORT=$PET_MASTER_PORT"
+      echo "PET_NPROC_PER_NODE=$PET_NPROC_PER_NODE"
+      echo "NVIDIA GPUs:"
+      nvidia-smi -L 2>/dev/null || echo "No GPUs detected"
+      echo "========================================"
+      python -m torch.distributed.run \
+        --nnodes=$PET_NNODES \
+        --nproc_per_node=$PET_NPROC_PER_NODE \
+        --node_rank=$PET_NODE_RANK \
+        --master_addr=$PET_MASTER_ADDR \
+        --master_port=$PET_MASTER_PORT \
+        training/recommendation/train.py \
+        --data-dir=s3://${S3_FEATURES_BUCKET} \
+        --output-dir=s3://${S3_MODELS_BUCKET}/recommendation \
+        --epochs=${REC_TRAIN_EPOCHS} \
+        --batch-size=${REC_TRAIN_BATCH_SIZE} \
+        --lr=${REC_TRAIN_LR} \
+        --embed-dim=${REC_EMBED_DIM} \
+        --hidden-dim=${REC_HIDDEN_DIM} \
+        --max-rows=${REC_MAX_ROWS} \
+        --no-feast
+    env:
+    - name: MLFLOW_TRACKING_URI
+      value: "${MLFLOW_TRACKING_URI}"
+    - name: MLFLOW_TRACKING_INSECURE_TLS
+      value: "true"
+    - name: FEAST_REPO_PATH
+      value: "${FEAST_REPO_PATH}"
+    - name: S3_ENDPOINT
+      value: "${MINIO_ENDPOINT}"
+    - name: AWS_ENDPOINT_URL_S3
+      value: "${MINIO_ENDPOINT}"
+    - name: AWS_DEFAULT_REGION
+      value: "${AWS_DEFAULT_REGION}"
+    - name: HF_HOME
+      value: "${HF_HOME}"
+    - name: NCCL_DEBUG
+      value: "INFO"
+    - name: NCCL_IB_DISABLE
+      value: "1"
+  podTemplateOverrides:
+  - targetJobs:
+    - name: node
     spec:
-      replicatedJobs:
-        - name: worker
-          template:
-            spec:
-              template:
-                spec:
-                  containers:
-                    - name: trainer
-                      envFrom:
-                        - secretRef:
-                            name: smartshop-credentials
-                        - secretRef:
-                            name: smartshop-mlflow-token
-                        - secretRef:
-                            name: hf-credentials
-                      env:
-                        - name: HF_HOME
-                          value: "${HF_HOME}"
-                        - name: S3_ENDPOINT
-                          value: "${MINIO_ENDPOINT}"
-                        - name: AWS_ENDPOINT_URL_S3
-                          value: "${MINIO_ENDPOINT}"
-                        - name: AWS_DEFAULT_REGION
-                          value: "${AWS_DEFAULT_REGION}"
-                        - name: NCCL_DEBUG
-                          value: "INFO"
-                        - name: NCCL_IB_DISABLE
-                          value: "1"
-                      resources:
-                        requests:
-                          nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"
-                      volumeMounts:
-                        - name: shm
-                          mountPath: /dev/shm
-                  volumes:
-                    - name: shm
-                      emptyDir:
-                        medium: Memory
-                        sizeLimit: "32Gi"
+      containers:
+      - name: node
+        envFrom:
+        - secretRef:
+            name: smartshop-credentials
+        - secretRef:
+            name: smartshop-mlflow-token
+        volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+        - name: service-ca
+          mountPath: /var/run/secrets/service-ca
+          readOnly: true
+        - name: feast-config
+          mountPath: /feast/feature_repo
+          readOnly: true
+      volumes:
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "8Gi"
+      - name: service-ca
+        configMap:
+          name: smartshop-service-ca
+      - name: feast-config
+        configMap:
+          name: feast-training-config
 
 ---
-# Kubeflow Trainer - LLM Fine-Tuning (FSDP on Slurm)
+# Kubeflow Trainer - LLM Fine-Tuning (QLoRA + FSDP)
+# Uses built-in torch-distributed ClusterTrainingRuntime.
 apiVersion: trainer.kubeflow.org/v1alpha1
 kind: TrainJob
 metadata:
   name: smartshop-llm-finetune
   namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: llm-training
 spec:
   runtimeRef:
-    name: smartshop-llm-fsdp-slurm
+    name: torch-distributed
     kind: ClusterTrainingRuntime
   trainer:
     image: ${LLM_TRAINER_IMAGE}
-    command:
-      - torchrun
-    args:
-      - --nnodes=${LLM_TRAIN_NODES}
-      - --nproc_per_node=${LLM_GPUS_PER_NODE}
-      - training/llm/finetune.py
-      - --data-dir=s3://${S3_FEATURES_BUCKET}/llm_data
-      - --output-dir=s3://${S3_MODELS_BUCKET}/llm-adapter
-      - --model=${LLM_BASE_MODEL}
-      - --epochs=${LLM_TRAIN_EPOCHS}
-      - --batch-size=${LLM_TRAIN_BATCH_SIZE}
-      - --gradient-accumulation=${LLM_GRAD_ACCUM}
     numNodes: ${LLM_TRAIN_NODES}
+    numProcPerNode: ${LLM_GPUS_PER_NODE}
     resourcesPerNode:
       requests:
         cpu: "16"
-        memory: "64Gi"
+        memory: "128Gi"
         nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"
       limits:
         cpu: "32"
-        memory: "128Gi"
+        memory: "256Gi"
         nvidia.com/gpu: "${LLM_GPUS_PER_NODE}"
+    command:
+    - bash
+    - -c
+    - |
+      set -e
+      echo "========================================"
+      echo "SMARTSHOP LLM - MULTI-NODE FSDP/QLORA"
+      echo "PET_NNODES=$PET_NNODES PET_NODE_RANK=$PET_NODE_RANK"
+      echo "PET_MASTER_ADDR=$PET_MASTER_ADDR PET_MASTER_PORT=$PET_MASTER_PORT"
+      echo "PET_NPROC_PER_NODE=$PET_NPROC_PER_NODE"
+      echo "NVIDIA GPUs:"
+      nvidia-smi -L 2>/dev/null || echo "No GPUs detected"
+      echo "========================================"
+      python -m torch.distributed.run \
+        --nnodes=$PET_NNODES \
+        --nproc_per_node=$PET_NPROC_PER_NODE \
+        --node_rank=$PET_NODE_RANK \
+        --master_addr=$PET_MASTER_ADDR \
+        --master_port=$PET_MASTER_PORT \
+        training/llm/finetune.py \
+        --data-dir=s3://${S3_FEATURES_BUCKET}/llm_data \
+        --output-dir=s3://${S3_MODELS_BUCKET}/llm-adapter \
+        --base-model=${LLM_BASE_MODEL} \
+        --epochs=${LLM_TRAIN_EPOCHS} \
+        --batch-size=${LLM_TRAIN_BATCH_SIZE} \
+        --gradient-accumulation=${LLM_GRAD_ACCUM} \
+        --max-files=3
+    env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: hf-credentials
+          key: token
+    - name: HF_HOME
+      value: "${HF_HOME}"
+    - name: S3_ENDPOINT
+      value: "${MINIO_ENDPOINT}"
+    - name: AWS_ENDPOINT_URL_S3
+      value: "${MINIO_ENDPOINT}"
+    - name: AWS_DEFAULT_REGION
+      value: "${AWS_DEFAULT_REGION}"
+    - name: MLFLOW_TRACKING_URI
+      value: "${MLFLOW_TRACKING_URI}"
+    - name: MLFLOW_TRACKING_INSECURE_TLS
+      value: "true"
+    - name: NCCL_DEBUG
+      value: "INFO"
+    - name: NCCL_IB_DISABLE
+      value: "1"
+  podTemplateOverrides:
+  - targetJobs:
+    - name: node
+    spec:
+      containers:
+      - name: node
+        envFrom:
+        - secretRef:
+            name: smartshop-credentials
+        - secretRef:
+            name: smartshop-mlflow-token
+        - secretRef:
+            name: hf-credentials
+        volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+      volumes:
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "64Gi"

@@ -309,8 +309,8 @@ print(base64.b64encode(s.encode()).decode())
   # Run feast apply via the offline container (has pyspark + SparkSource + AWS creds).
   # Path: /feast-data/smartshop/feast/feature_repo (featureRepoPath=feast/feature_repo in CR).
   oc exec -n "$NAMESPACE" "$FEAST_POD" -c offline -- bash -c "
-    export AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:-minio}
-    export AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:-minio123}
+    export AWS_ACCESS_KEY_ID=${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in .env}
+    export AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in .env}
     cd /feast-data/smartshop/feast/feature_repo
     feast apply 2>&1
   "
@@ -374,10 +374,17 @@ for doc in content.split('---'):
 # ── Phase: serving ────────────────────────────────────────────────────────────
 phase_serving() {
   log "Phase: serving"
-  apply "$REPO_ROOT/infrastructure/openshift/inferenceservices.yaml"
-  ok "InferenceServices applied"
+
+  # Consolidated manifest: Secret, SA, ServingRuntimes, InferenceServices, ServiceMonitor
+  apply "$REPO_ROOT/infrastructure/openshift/serving-runtimes.yaml"
+  ok "Serving stack applied (Secret + SA + 2 ServingRuntimes + 3 InferenceServices + ServiceMonitor)"
+
+  echo ""
   echo "  Monitor: oc get inferenceservice -n $NAMESPACE -w"
   echo "  Ready when READY=True for all 3: smartshop-rec, smartshop-llm, smartshop-rag"
+  echo ""
+  echo "  ⚠  LLM pod takes ~5 min (image pull + HF model download + CUDA graph capture)"
+  echo "  ⚠  Rec pod needs rec-server image built first (make build-serving)"
 }
 
 # ── Phase: notebook ───────────────────────────────────────────────────────────

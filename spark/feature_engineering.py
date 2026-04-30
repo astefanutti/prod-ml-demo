@@ -9,8 +9,8 @@ Outputs features as Parquet files compatible with Feast offline store.
 
 Usage:
     spark-submit spark/feature_engineering.py \
-        --input s3a://smartshop/raw/ \
-        --output s3a://smartshop/features/
+        --input s3a://smartshop-raw/ \
+        --output s3a://smartshop-features/
 """
 
 import argparse

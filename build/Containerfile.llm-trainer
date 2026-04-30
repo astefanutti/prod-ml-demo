@@ -1,21 +1,13 @@
-FROM registry.access.redhat.com/ubi9/python-312-minimal:1
-
-USER 0
-RUN microdnf install -y gcc python3.12-devel && microdnf clean all
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-ENV UV_CACHE_DIR=/tmp/uv-cache
+# RHOAI training runtime — CUDA 13.0 + Python 3.12 + PyTorch 2.9.1
+# Already includes: torch, transformers, peft, trl, bitsandbytes, accelerate,
+# datasets, sentencepiece, deepspeed, flash-attn, xformers, mlflow, s3fs, fsspec
+FROM quay.io/opendatahub/odh-th06-cuda130-torch291-py312:odh-3.4
 
 WORKDIR /app
-
-COPY build/requirements/training.txt requirements.txt
-RUN uv pip install --python python3.12 --no-cache -r requirements.txt
 
 COPY training/llm/ training/llm/
 
 USER 1001
 
-# TrainJob overrides this CMD with --nnodes=2 --nproc_per_node=4 and S3 paths.
-# Standalone testing: docker run ... (uses --sample on local data)
 CMD ["torchrun", "--nproc_per_node=1", "training/llm/finetune.py", \
      "--data-dir", "data/llm_data", "--sample"]

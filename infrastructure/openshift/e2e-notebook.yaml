@@ -1,0 +1,193 @@
+---
+# Kubeflow Notebook CRD for end-to-end pipeline testing.
+# Runs papermill sequentially: rec training → llm training → serving tests.
+#
+# Notebooks use Kubeflow SDK (TrainerClient / TransformersTrainer) to submit
+# TrainJobs and KServe SDK to deploy InferenceServices.
+#
+# Usage:
+#   oc create configmap e2e-notebooks \
+#     --from-file=01_training_rec.ipynb=notebooks/01_training_rec.ipynb \
+#     --from-file=02_training_llm.ipynb=notebooks/02_training_llm.ipynb \
+#     --from-file=03_serving.ipynb=notebooks/03_serving.ipynb \
+#     -n $NAMESPACE --dry-run=client -o yaml | oc apply -f -
+#
+#   set -a; source .env; set +a
+#   envsubst '$NAMESPACE $REC_TRAINER_IMAGE $MINIO_ENDPOINT $AWS_DEFAULT_REGION
+#     $MLFLOW_TRACKING_URI $S3_FEATURES_BUCKET $S3_MODELS_BUCKET $REC_MAX_ROWS
+#     $REC_TRAIN_EPOCHS $REC_TRAIN_BATCH_SIZE $REC_TRAIN_NODES $REC_GPUS_PER_NODE
+#     $LLM_BASE_MODEL $LLM_MAX_FILES $LLM_TRAIN_EPOCHS $LLM_MAX_STEPS
+#     $LLM_GRAD_ACCUM $LLM_TRAIN_NODES $LLM_GPUS_PER_NODE' \
+#     < infrastructure/openshift/e2e-notebook.yaml | oc apply -f -
+apiVersion: kubeflow.org/v1
+kind: Notebook
+metadata:
+  name: smartshop-e2e-test
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop-e2e
+  annotations:
+    notebooks.opendatahub.io/inject-oauth: "false"
+spec:
+  template:
+    spec:
+      serviceAccountName: default
+      containers:
+        - name: e2e-runner
+          image: ${REC_TRAINER_IMAGE}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+
+              pip install -q "kubeflow[rhai]" --no-cache-dir \
+                --index-url https://console.redhat.com/api/pypi/public-rhai/rhoai/3.3/cuda12.9-ubi9/simple/
+              pip install -q papermill kserve kubernetes "fsspec[s3]" s3fs boto3 requests ipykernel
+
+              mkdir -p /opt/app-root/output
+
+              echo "===== PHASE 1: Recommendation Training ====="
+              papermill /opt/app-root/notebooks/01_training_rec.ipynb \
+                /opt/app-root/output/01_training_rec_out.ipynb \
+                -p NAMESPACE "${E2E_NAMESPACE}" \
+                -p RUNTIME "torch-distributed" \
+                -p DATA_DIR "${E2E_REC_DATA_DIR}" \
+                -p OUTPUT_DIR "${E2E_REC_OUTPUT_DIR}" \
+                -p MAX_ROWS ${E2E_REC_MAX_ROWS} \
+                -p EPOCHS ${E2E_REC_EPOCHS} \
+                -p BATCH_SIZE ${E2E_REC_BATCH_SIZE} \
+                -p NUM_NODES ${E2E_REC_NUM_NODES} \
+                -p GPUS_PER_NODE ${E2E_REC_GPUS_PER_NODE} \
+                -p MINIO_ENDPOINT "${E2E_MINIO_ENDPOINT}" \
+                -p MLFLOW_TRACKING_URI "${E2E_MLFLOW_URI}" \
+                -p S3_CREDENTIALS_SECRET "smartshop-credentials" \
+                -p MLFLOW_SECRET "smartshop-mlflow-token" \
+                -p TIMEOUT_SECONDS 7200 \
+                --log-output --no-progress-bar
+
+              echo "===== PHASE 2: LLM Fine-tuning ====="
+              papermill /opt/app-root/notebooks/02_training_llm.ipynb \
+                /opt/app-root/output/02_training_llm_out.ipynb \
+                -p NAMESPACE "${E2E_NAMESPACE}" \
+                -p RUNTIME "torch-distributed" \
+                -p DATA_DIR "${E2E_LLM_DATA_DIR}" \
+                -p OUTPUT_DIR "${E2E_LLM_OUTPUT_DIR}" \
+                -p BASE_MODEL "${E2E_LLM_BASE_MODEL}" \
+                -p MAX_FILES ${E2E_LLM_MAX_FILES} \
+                -p EPOCHS ${E2E_LLM_EPOCHS} \
+                -p MAX_STEPS ${E2E_LLM_MAX_STEPS} \
+                -p GRADIENT_ACCUMULATION ${E2E_LLM_GRAD_ACCUM} \
+                -p NUM_NODES ${E2E_LLM_NUM_NODES} \
+                -p GPUS_PER_NODE ${E2E_LLM_GPUS_PER_NODE} \
+                -p MINIO_ENDPOINT "${E2E_MINIO_ENDPOINT}" \
+                -p MLFLOW_TRACKING_URI "${E2E_MLFLOW_URI}" \
+                -p S3_CREDENTIALS_SECRET "smartshop-credentials" \
+                -p MLFLOW_SECRET "smartshop-mlflow-token" \
+                -p HF_SECRET "hf-credentials" \
+                -p TIMEOUT_SECONDS 7200 \
+                --log-output --no-progress-bar
+
+              echo "===== PHASE 3: Serving Tests ====="
+              papermill /opt/app-root/notebooks/03_serving.ipynb \
+                /opt/app-root/output/03_serving_out.ipynb \
+                -p NAMESPACE "${E2E_NAMESPACE}" \
+                -p MINIO_ENDPOINT "${E2E_MINIO_ENDPOINT}" \
+                -p TIMEOUT_SECONDS 900 \
+                --log-output --no-progress-bar
+
+              echo "NOTEBOOK_STATUS: SUCCESS"
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: smartshop-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: smartshop-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_ENDPOINT_URL_S3
+              value: "${MINIO_ENDPOINT}"
+            - name: AWS_DEFAULT_REGION
+              value: "${AWS_DEFAULT_REGION}"
+            - name: MLFLOW_TRACKING_URI
+              value: "${MLFLOW_TRACKING_URI}"
+            - name: MLFLOW_TRACKING_INSECURE_TLS
+              value: "true"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-credentials
+                  key: token
+            # Papermill params passed as env vars (avoids envsubst clobbering shell vars)
+            - name: E2E_NAMESPACE
+              value: "${NAMESPACE}"
+            - name: E2E_MINIO_ENDPOINT
+              value: "${MINIO_ENDPOINT}"
+            - name: E2E_MLFLOW_URI
+              value: "${MLFLOW_TRACKING_URI}"
+            - name: E2E_REC_IMAGE
+              value: "${REC_TRAINER_IMAGE}"
+            - name: E2E_MLFLOW_SECRET
+              value: "smartshop-mlflow-token"
+            - name: E2E_HF_SECRET
+              value: "hf-credentials"
+            - name: E2E_REC_DATA_DIR
+              value: "s3://${S3_FEATURES_BUCKET}"
+            - name: E2E_REC_OUTPUT_DIR
+              value: "s3://${S3_MODELS_BUCKET}/recommendation"
+            - name: E2E_REC_MAX_ROWS
+              value: "${REC_MAX_ROWS}"
+            - name: E2E_REC_EPOCHS
+              value: "${REC_TRAIN_EPOCHS}"
+            - name: E2E_REC_BATCH_SIZE
+              value: "${REC_TRAIN_BATCH_SIZE}"
+            - name: E2E_REC_NUM_NODES
+              value: "${REC_TRAIN_NODES}"
+            - name: E2E_REC_GPUS_PER_NODE
+              value: "${REC_GPUS_PER_NODE}"
+            - name: E2E_LLM_DATA_DIR
+              value: "s3://${S3_FEATURES_BUCKET}/llm_data"
+            - name: E2E_LLM_OUTPUT_DIR
+              value: "s3://${S3_MODELS_BUCKET}/llm-adapter"
+            - name: E2E_LLM_BASE_MODEL
+              value: "${LLM_BASE_MODEL}"
+            - name: E2E_LLM_MAX_FILES
+              value: "${LLM_MAX_FILES}"
+            - name: E2E_LLM_EPOCHS
+              value: "${LLM_TRAIN_EPOCHS}"
+            - name: E2E_LLM_MAX_STEPS
+              value: "${LLM_MAX_STEPS}"
+            - name: E2E_LLM_GRAD_ACCUM
+              value: "${LLM_GRAD_ACCUM}"
+            - name: E2E_LLM_NUM_NODES
+              value: "${LLM_TRAIN_NODES}"
+            - name: E2E_LLM_GPUS_PER_NODE
+              value: "${LLM_GPUS_PER_NODE}"
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          volumeMounts:
+            - name: notebooks
+              mountPath: /opt/app-root/notebooks
+              readOnly: true
+            - name: output
+              mountPath: /opt/app-root/output
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: notebooks
+          configMap:
+            name: e2e-notebooks
+        - name: output
+          emptyDir: {}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "2Gi"

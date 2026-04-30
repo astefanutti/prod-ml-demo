@@ -1,0 +1,92 @@
+apiVersion: kubeflow.org/v1
+kind: Notebook
+metadata:
+  name: smartshop-llm-train
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop-e2e
+  annotations:
+    notebooks.opendatahub.io/inject-oauth: "false"
+spec:
+  template:
+    spec:
+      serviceAccountName: jupyter-nb-kube-3aadmin
+      volumes:
+        - name: notebooks
+          configMap:
+            name: e2e-notebooks
+        - name: output
+          emptyDir: {}
+        - name: shm
+          emptyDir:
+            medium: Memory
+      containers:
+        - name: llm-runner
+          image: ${LLM_TRAINER_IMAGE:-${REC_TRAINER_IMAGE}}
+          resources:
+            requests: { cpu: "2", memory: 4Gi }
+            limits:   { cpu: "4", memory: 8Gi }
+          volumeMounts:
+            - name: notebooks
+              mountPath: /opt/app-root/notebooks
+              readOnly: true
+            - name: output
+              mountPath: /opt/app-root/output
+            - name: shm
+              mountPath: /dev/shm
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: smartshop-credentials, key: AWS_ACCESS_KEY_ID }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: smartshop-credentials, key: AWS_SECRET_ACCESS_KEY }
+            - name: AWS_ENDPOINT_URL_S3
+              value: "${MINIO_ENDPOINT}"
+            - name: AWS_DEFAULT_REGION
+              value: "${AWS_DEFAULT_REGION}"
+            - name: MLFLOW_TRACKING_URI
+              value: "${MLFLOW_TRACKING_URI}"
+            - name: MLFLOW_TRACKING_INSECURE_TLS
+              value: "true"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef: { name: hf-credentials, key: token }
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -uo pipefail
+              _sleep_forever() {
+                echo "Sleeping to prevent Notebook CR restart loop."
+                sleep infinity
+              }
+              trap '_sleep_forever' EXIT
+
+              pip install -q papermill ipykernel
+
+              mkdir -p /opt/app-root/output
+
+              echo "===== LLM Fine-tuning ====="
+              papermill /opt/app-root/notebooks/02_training_llm.ipynb \
+                /opt/app-root/output/02_training_llm_out.ipynb \
+                -p NAMESPACE "${NAMESPACE}" \
+                -p RUNTIME "torch-distributed" \
+                -p DATA_DIR "s3://${S3_FEATURES_BUCKET}/llm_data" \
+                -p OUTPUT_DIR "s3://${S3_MODELS_BUCKET}/llm-adapter" \
+                -p BASE_MODEL "${LLM_BASE_MODEL}" \
+                -p MAX_FILES ${LLM_MAX_FILES:-3} \
+                -p EPOCHS ${LLM_TRAIN_EPOCHS} \
+                -p MAX_STEPS ${LLM_MAX_STEPS:-200} \
+                -p GRADIENT_ACCUMULATION ${LLM_GRAD_ACCUM} \
+                -p NUM_NODES ${LLM_TRAIN_NODES} \
+                -p GPUS_PER_NODE ${LLM_GPUS_PER_NODE} \
+                -p MINIO_ENDPOINT "${MINIO_ENDPOINT}" \
+                -p MLFLOW_TRACKING_URI "${MLFLOW_TRACKING_URI}" \
+                -p S3_CREDENTIALS_SECRET "smartshop-credentials" \
+                -p MLFLOW_SECRET "smartshop-mlflow-token" \
+                -p HF_SECRET "hf-credentials" \
+                -p TIMEOUT_SECONDS 7200 \
+                --log-output --no-progress-bar
+
+              echo "NOTEBOOK_STATUS: SUCCESS"

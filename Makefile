@@ -117,8 +117,8 @@ train-llm: ## Fine-tune Mistral-7B with QLoRA (local, sample)
 		--output-dir models/llm-adapter \
 		--sample
 
-train-llm-slurm: ## Submit LLM fine-tuning to Slurm
-	sbatch infrastructure/slurm/sbatch_llm_finetune.sh
+train-llm-k8s: ## Submit LLM QLoRA fine-tuning via Kubeflow TrainJob
+	set -a && source .env && set +a && envsubst < infrastructure/openshift/trainjobs.yaml | $(KUBECTL) apply -f -
 
 # ============================================================================
 # Serving (local development)
@@ -136,8 +136,8 @@ serve-llm: ## Start LLM summarization server
 serve-rag: ## Start RAG Q&A server
 	uvicorn serving.rag.server:app --host 0.0.0.0 --port 8002
 
-serve-k8s: ## Deploy KServe InferenceServices
-	envsubst < infrastructure/openshift/inferenceservices.yaml | $(KUBECTL) apply -f -
+serve-k8s: ## Deploy KServe ServingRuntimes + InferenceServices + ServiceMonitor
+	envsubst < infrastructure/openshift/serving-runtimes.yaml | $(KUBECTL) apply -f -
 
 # ============================================================================
 # Demo
@@ -227,13 +227,13 @@ setup-secrets: ## Create/update all Kubernetes secrets from .env values
 	$(KUBECTL) create secret generic minio-root-user \
 	  --from-literal=MINIO_ROOT_USER=$(MINIO_ACCESS_KEY) \
 	  --from-literal=MINIO_ROOT_PASSWORD=$(MINIO_SECRET_KEY) \
-	  -n smartshop --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	  -n $(NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	$(KUBECTL) create secret generic hf-credentials \
 	  --from-literal=token=$(HF_TOKEN) \
-	  -n smartshop --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	  -n $(NAMESPACE) --dry-run=client -o yaml | $(KUBECTL) apply -f -
 	@echo "==> Secrets synced."
 
-deploy: setup-secrets ## Deploy all infrastructure to OpenShift (see docs/SETUP.md for full guide)
+deploy: setup-secrets ## Deploy all infrastructure to OpenShift (see docs/setup/ for full guide)
 	$(KUBECTL) apply -f infrastructure/smartshop/namespace.yaml
 	$(KUBECTL) apply -f infrastructure/smartshop/shared-storage.yaml
 	$(KUBECTL) apply -f infrastructure/smartshop/spark-rbac.yaml

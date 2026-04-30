@@ -1,0 +1,29 @@
+---
+# feast-training-config ConfigMap
+# Provides the Feast remote-registry config to rec-trainer pods via volume mount.
+# Source of truth: feast/feature_repo/feature_store_training.yaml
+#
+# Create / update:
+#   oc create configmap feast-training-config \
+#     --from-file=feature_store.yaml=feast/feature_repo/feature_store_training.yaml \
+#     -n ${NAMESPACE} --dry-run=client -o yaml | oc apply -f -
+#
+# The rec-trainer mounts this at /feast/feature_repo/feature_store.yaml
+# (see trainjobs.yaml, volume "feast-config").
+#
+# NOTE: This is a stub manifest. The actual data is generated from the source file
+# using the command above, because YAML-in-YAML is fragile. The ConfigMap on the
+# cluster must match feast/feature_repo/feature_store_training.yaml exactly.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feast-training-config
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: feast
+data:
+  feature_store.yaml: |
+    # Auto-generated — do not edit here.
+    # Run the oc create configmap command above to regenerate from source.
+    # See feast/feature_repo/feature_store_training.yaml for the canonical version.

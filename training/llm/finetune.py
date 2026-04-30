@@ -1,7 +1,6 @@
 """Fine-tune Mistral-7B with QLoRA on review summarization/Q&A.
 
-Uses FSDP for multi-node multi-GPU training, designed to run on Slurm
-via Kubeflow Trainer's ClusterTrainingRuntime.
+Uses QLoRA with FSDP for multi-GPU training via Kubeflow Trainer on K8s.
 
 Usage (single GPU, testing):
     python training/llm/finetune.py --data-dir data/llm_data --sample
@@ -25,9 +24,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
 )
-from trl import SFTTrainer
+from trl import SFTConfig, SFTTrainer
 
 
 def _open_file(path: str):
@@ -38,17 +36,20 @@ BASE_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 MAX_SEQ_LENGTH = 2048
 
 
-def load_jsonl_dataset(data_dir: str, split: str) -> HFDataset:
+def load_jsonl_dataset(data_dir: str, split: str, max_files: int = 10) -> HFDataset:
     """Load JSONL instruction-tuning data from local path or S3 directory.
+
+    Uses HF datasets.load_dataset for memory-mapped loading instead of
+    reading everything into a Python list (which OOMs on large datasets).
 
     Handles:
     - s3://bucket/path/split/  — Spark part-* output files on MinIO
     - /local/path/split/       — local directory of .txt or part-* files
     - /local/path/split.jsonl  — single JSONL file
     """
-    split_path = data_dir.rstrip("/") + "/" + split
-    texts = []
+    from datasets import load_dataset
 
+    split_path = data_dir.rstrip("/") + "/" + split
     fs, _ = fsspec.core.url_to_fs(split_path)
 
     if fs.exists(split_path) and fs.isdir(split_path):
@@ -56,29 +57,31 @@ def load_jsonl_dataset(data_dir: str, split: str) -> HFDataset:
         part_files = [e for e in entries if
                       os.path.basename(e).startswith("part-") or
                       os.path.basename(e).endswith(".txt")]
-        for entry in part_files:
-            with fs.open(entry, "rt", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        texts.append(line)
+        if max_files and max_files > 0:
+            part_files = part_files[:max_files]
+
+        # fsspec.ls() strips the s3:// prefix — re-add it for datasets library
+        if split_path.startswith("s3://") and part_files and not part_files[0].startswith("s3://"):
+            part_files = [f"s3://{f}" for f in part_files]
+
+        print(f"Loading {len(part_files)} files from {split_path}")
+
+        storage_opts = {}
+        if split_path.startswith("s3://"):
+            storage_opts = {
+                "key": os.environ.get("AWS_ACCESS_KEY_ID", ""),
+                "secret": os.environ.get("AWS_SECRET_ACCESS_KEY", ""),
+                "client_kwargs": {
+                    "endpoint_url": os.environ.get("AWS_ENDPOINT_URL_S3",
+                                                   os.environ.get("S3_ENDPOINT", ""))
+                },
+            }
+
+        return load_dataset("json", data_files=part_files, split="train",
+                            storage_options=storage_opts or None)
     else:
         jsonl_path = split_path + ".jsonl"
-        if fs.exists(jsonl_path):
-            with fs.open(jsonl_path, "rt", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        texts.append(line)
-
-    records = []
-    for text in texts:
-        try:
-            records.append(json.loads(text))
-        except json.JSONDecodeError:
-            continue
-
-    return HFDataset.from_list(records)
+        return load_dataset("json", data_files=jsonl_path, split="train")
 
 
 def format_instruction(example: dict) -> str:
@@ -108,6 +111,8 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--lora-alpha", type=int, default=32)
+    parser.add_argument("--max-files", type=int, default=10,
+                        help="Max S3 part-files to load (default 10, ~2.5GB). 0 = all.")
     parser.add_argument("--sample", action="store_true", help="Use small subset for testing")
     args = parser.parse_args()
 
@@ -118,9 +123,9 @@ def main():
         print(f"Fine-tuning {args.base_model} with QLoRA")
         print(f"Data: {args.data_dir}")
 
-    # Load datasets
-    train_dataset = load_jsonl_dataset(args.data_dir, "train")
-    val_dataset = load_jsonl_dataset(args.data_dir, "val")
+    # Load datasets (cap files to avoid OOM on large Spark outputs)
+    train_dataset = load_jsonl_dataset(args.data_dir, "train", max_files=args.max_files)
+    val_dataset = load_jsonl_dataset(args.data_dir, "val", max_files=args.max_files)
 
     if args.sample:
         train_dataset = train_dataset.select(range(min(1000, len(train_dataset))))
@@ -168,7 +173,7 @@ def main():
     tokenizer.padding_side = "right"
 
     # Training arguments
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
@@ -188,6 +193,7 @@ def main():
         gradient_checkpointing=True,
         report_to="none",
         dataloader_num_workers=4,
+        max_length=MAX_SEQ_LENGTH,
         # FSDP config for multi-node
         fsdp="full_shard auto_wrap" if int(os.environ.get("WORLD_SIZE", 1)) > 1 else "",
         fsdp_config={
@@ -204,7 +210,6 @@ def main():
         eval_dataset=val_dataset,
         processing_class=tokenizer,
         formatting_func=format_instruction,
-        max_seq_length=MAX_SEQ_LENGTH,
     )
 
     # Train

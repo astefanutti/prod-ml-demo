@@ -13,14 +13,14 @@ provider: local
 registry:
   registry_type: remote
   # RHOAI Feast Operator exposes registry on port 443 (OpenShift service CA TLS, targetPort 6571)
-  # ssl_certificate_path must point to the OpenShift service CA bundle mounted in the pod
   path: feast-smartshop-feast-registry.smartshop.svc.cluster.local:443
-  ssl_certificate_path: /var/run/secrets/service-ca/service-ca.crt
+  cert: /var/run/secrets/service-ca/service-ca.crt
 
 offline_store:
   type: spark
   spark_conf:
     spark.master: "local[*]"
+    spark.api.mode: "classic"
     spark.ui.enabled: "false"
     spark.eventLog.enabled: "false"
     spark.sql.session.timeZone: "UTC"
@@ -36,7 +36,7 @@ offline_store:
     spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
     spark.hadoop.fs.s3a.path.style.access: "true"
     spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
-    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
     spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
     spark.hadoop.fs.s3a.connection.maximum: "100"
     spark.hadoop.fs.s3a.threads.max: "64"

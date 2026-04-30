@@ -1,0 +1,216 @@
+---
+# feast-materialize-embeddings Job
+#
+# Runs feast apply + feast materialize for the review_embeddings @batch_feature_view.
+# Writes 384-dim sentence-transformers embeddings into Milvus via feast materialize.
+#
+# TWO MODES controlled by SPARK_MASTER env var (set below under envSubst vars):
+#
+#   TEST  (local[4]):
+#     - All Spark runs in-pod, 4 concurrent workers (bounded to prevent JVM OOM).
+#     - local[*] on 80-core nodes spawns 80 SentenceTransformer workers → JVM OOM.
+#     - Use narrow MATERIALIZE_START / MATERIALIZE_END for fast validation (~minutes).
+#     - Default: 2023-06-01 → 2023-06-08 (1 week of reviews).
+#
+#   PRODUCTION (k8s://):
+#     - Spawns ${SPARK_EXECUTOR_EMBEDDINGS_IMAGE} executor pods.
+#     - Change SPARK_MASTER to k8s://https://kubernetes.default.svc:443.
+#     - Set MATERIALIZE_END to current timestamp for full incremental load.
+#
+# Prerequisites:
+#   1. Image built:  oc start-build feast-spark-executor-embeddings -n smartshop --follow
+#   2. Service CA:   envsubst < infrastructure/openshift/service-ca-configmap.yaml | oc apply -f -
+#   3. Feature repo ConfigMap (sync feature_repo files into the cluster):
+#        oc create configmap smartshop-feast-feature-repo \
+#          --from-file=features.py=feast/feature_repo/features.py \
+#          --from-file=feature_store_milvus.yaml=feast/feature_repo/feature_store_milvus.yaml \
+#          -n smartshop --dry-run=client -o yaml | oc apply -f -
+#   4. Secret:       oc get secret smartshop-credentials -n smartshop  (must exist)
+#
+# Apply (test mode):
+#   set -a; source .env; set +a
+#   envsubst < infrastructure/openshift/feast-materialize-embeddings-job.yaml | oc apply -f -
+#   oc logs -n smartshop job/feast-materialize-embeddings -f
+#
+# Clean up:
+#   oc delete job feast-materialize-embeddings -n smartshop
+#
+# Verify embeddings in Milvus (after job completes):
+#   oc exec -n smartshop deploy/milvus -c milvus -- \
+#     python3 -c "from pymilvus import MilvusClient; c=MilvusClient('http://localhost:19530'); \
+#       print(c.get_collection_stats('feast_smartshop_review_embeddings'))"
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: feast-materialize-embeddings
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: feast-embeddings
+spec:
+  ttlSecondsAfterFinished: 86400   # keep pod logs for 24 h after completion
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: smartshop
+        component: feast-embeddings
+    spec:
+      restartPolicy: Never
+      serviceAccountName: spark   # needs pod create/delete for k8s:// executor pods
+
+      containers:
+        - name: feast-materialize
+          image: ${SPARK_EXECUTOR_EMBEDDINGS_IMAGE}
+          imagePullPolicy: Always
+          command:
+            - bash
+            - -xeuo
+            - pipefail
+            - -c
+            - |
+              # ── Build a self-contained feast repo dir in /tmp/feast-repo ────────────
+              # feast apply infers the repo root from the directory of the -c config file.
+              # features.py must live alongside the config.
+              mkdir -p /tmp/feast-repo
+              cp /feast-repo/features.py /tmp/feast-repo/features.py
+
+              # Render template vars (Python string.Template, no envsubst needed)
+              python3 - <<'PYEOF'
+              import os, string
+              src = open("/feast-repo/feature_store_milvus.yaml").read()
+              rendered = string.Template(src).safe_substitute(os.environ)
+              open("/tmp/feast-repo/feature_store.yaml", "w").write(rendered)
+              PYEOF
+
+              echo "=== feature_store.yaml (rendered) ==="
+              cat /tmp/feast-repo/feature_store.yaml
+              echo "======================================"
+
+              # ── Pre-flight: verify cert mount and gRPC connectivity ──────────────
+              echo ">>> pre-flight: cert + gRPC"
+              python3 - <<'PREFLIGHT'
+              import os, grpc, sys
+
+              cert_path = "/var/run/secrets/feast-registry-tls/tls.crt"
+              if not os.path.exists(cert_path):
+                  print(f"ERROR: cert not found at {cert_path}", file=sys.stderr)
+                  sys.exit(1)
+              with open(cert_path, "rb") as f:
+                  ca = f.read()
+              print(f"cert OK: {cert_path} ({len(ca)} bytes)")
+
+              creds = grpc.ssl_channel_credentials(root_certificates=ca)
+              ch = grpc.secure_channel(
+                  "feast-smartshop-feast-registry.${NAMESPACE}.svc.cluster.local:443", creds)
+              try:
+                  grpc.channel_ready_future(ch).result(timeout=10)
+                  print("gRPC channel READY")
+              except Exception as e:
+                  print(f"gRPC FAILED: {e}", file=sys.stderr)
+                  sys.exit(1)
+              PREFLIGHT
+
+              # ── feast apply: register BFV + create Milvus collection ─────────────
+              # -c takes the DIRECTORY path (Feast auto-appends /feature_store.yaml)
+              echo ">>> feast apply"
+              feast -c /tmp/feast-repo apply
+
+              # ── feast materialize: read raw reviews → embed → write to Milvus ────
+              # --feature-views limits to review_embeddings only (skips user_features,
+              # item_features which have no vector fields and would error on Milvus).
+              echo ">>> feast materialize $MATERIALIZE_START $MATERIALIZE_END"
+              feast -c /tmp/feast-repo \
+                materialize "$MATERIALIZE_START" "$MATERIALIZE_END" \
+                --views review_embeddings
+
+              echo ">>> Done. Verifying row count in Milvus …"
+              python3 - <<'PYEOF'
+              from pymilvus import MilvusClient
+              import os
+
+              client = MilvusClient("http://milvus.${NAMESPACE}.svc.cluster.local:19530")
+              collection = "feast_smartshop_review_embeddings"
+
+              if client.has_collection(collection):
+                  stats = client.get_collection_stats(collection)
+                  print(f"Milvus collection '{collection}': {stats}")
+              else:
+                  print(f"WARNING: collection '{collection}' does not exist — feast apply may have failed")
+              PYEOF
+
+          env:
+            # ── Spark master: switch here for test vs production ─────────────────
+            # TEST:       local[4]  (bounded parallelism — local[*] on 80-core nodes
+            #             OOMs the JVM by spawning 80 concurrent SentenceTransformer
+            #             Python workers; 4 workers × ~350 MB/worker = ~1.4 GB safe)
+            # PRODUCTION: k8s://https://kubernetes.default.svc:443
+            - name: SPARK_MASTER
+              value: "local[4]"
+
+            # ── Materialize date range: narrow slice for first test run ──────────
+            # Covers 1 week of Amazon reviews — fast enough for local[*] validation.
+            # For production full-load, set MATERIALIZE_START to earliest review date.
+            - name: MATERIALIZE_START
+              value: "2023-06-01T00:00:00"
+            - name: MATERIALIZE_END
+              value: "2023-06-08T00:00:00"
+
+            # ── Spark executor image (only used when SPARK_MASTER=k8s://) ─────────
+            - name: SPARK_EXECUTOR_EMBEDDINGS_IMAGE
+              value: "${SPARK_EXECUTOR_EMBEDDINGS_IMAGE}"
+
+            # ── Feast namespace (for k8s:// executor pod scheduling) ─────────────
+            - name: NAMESPACE
+              value: "${NAMESPACE}"
+
+            # ── Pod IP: injected via Downward API so string.Template can render
+            #    spark.driver.host in feature_store_milvus.yaml ──────────────────
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+
+            # ── HuggingFace model cache (pre-baked in image at /opt/hf-cache) ────
+            - name: HF_HOME
+              value: "/opt/hf-cache"
+            - name: TRANSFORMERS_CACHE
+              value: "/opt/hf-cache"
+            - name: HF_HUB_OFFLINE
+              value: "1"     # never download — model is baked in the image
+
+            # ── FIPS disable (Red Hat OpenShift AI) ─────────────────────────────────────
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dcom.redhat.fips=false"
+
+          envFrom:
+            - secretRef:
+                name: smartshop-credentials   # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+
+          volumeMounts:
+            - name: feast-repo
+              mountPath: /feast-repo
+              readOnly: true
+            - name: feast-registry-tls
+              mountPath: /var/run/secrets/feast-registry-tls
+              readOnly: true
+
+          resources:
+            requests:
+              cpu: "4"
+              memory: "8Gi"
+            limits:
+              cpu: "8"
+              memory: "16Gi"
+
+      volumes:
+        - name: feast-repo
+          configMap:
+            name: smartshop-feast-feature-repo
+        - name: feast-registry-tls
+          configMap:
+            name: smartshop-feast-registry-tls
+            items:
+              - key: tls.crt
+                path: tls.crt

@@ -17,7 +17,7 @@
 # Route: https://spark-history-${NAMESPACE}.${OC_CLUSTER_DOMAIN}/
 #
 # Apply:
-#   oc apply -f infrastructure/openshift/spark-history-server.yaml
+#   envsubst < infrastructure/openshift/spark-history-server.yaml | oc apply -f -
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -45,7 +45,7 @@ spec:
             - -c
             - |
               set -e
-              MINIO_URL="http://minio.smartshop.svc.cluster.local:9000"
+              MINIO_URL="http://minio.${NAMESPACE}.svc.cluster.local:9000"
 
               mkdir -p /tmp/spark-extra-jars /tmp/spark-conf
               echo "Downloading hadoop-aws JARs..."
@@ -80,17 +80,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: smartshop-credentials
-                  key: MINIO_ACCESS_KEY
+                  key: AWS_ACCESS_KEY_ID
             - name: AWS_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
                   name: smartshop-credentials
-                  key: MINIO_SECRET_KEY
-            - name: AWS_ENDPOINT_URL_S3
-              valueFrom:
-                secretKeyRef:
-                  name: smartshop-credentials
-                  key: MINIO_ENDPOINT
+                  key: AWS_SECRET_ACCESS_KEY
             - name: SPARK_NO_DAEMONIZE
               value: "true"
           ports:

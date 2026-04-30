@@ -1,30 +1,31 @@
 ---
-# spark-application-embedding.yaml — MANUAL APPLY ONLY (not in apply-all.sh)
-#
-# Embedding generation is a separate pipeline step that runs after text-preprocessing.
-# It is NOT submitted by apply-all.sh phase_spark and must be applied manually:
-#   envsubst < infrastructure/openshift/spark-application-embedding.yaml | oc apply -f -
-#
-# wait-and-materialize.sh does NOT wait for this job — it runs independently of Feast materialization.
-#
-# Original header:
-#   Rebuild with: oc start-build smartshop-spark-jobs-rapids -n smartshop --follow
+# spark-application-embedding.yaml — Embed reviews → Milvus (direct, no Feast)
 #
 # WHAT IT DOES
-#   1. Reads raw reviews, combines title + text into embed_text
-#   2. Generates 384-dim embeddings via all-MiniLM-L6-v2 pandas UDF (batched, 64/batch)
-#   3. Writes Parquet to S3_EMBEDDINGS_BUCKET/review_embeddings/ with event_timestamp for Feast
+#   1. Reads raw reviews from S3, combines title + text (truncated to 1000 chars)
+#   2. Generates 384-dim embeddings via all-MiniLM-L6-v2 pandas UDF (distributed across executors)
+#   3. Collects to driver and batch-inserts into Milvus via pymilvus (driver-only, no executor pymilvus needed)
+#   4. Optionally writes Parquet backup to S3
 #
-# NOTE: RAPIDS plugin is intentionally NOT enabled here — pandas UDFs run on CPU.
-#   GPU benefit here is negligible; the bottleneck is the transformer inference, not SQL ops.
+# Prerequisites:
+#   1. Image built: oc start-build feast-spark-executor-embeddings -n smartshop --follow
+#   2. Milvus running: oc get svc milvus -n smartshop
+#   3. Script ConfigMap:
+#        oc create configmap smartshop-embedding-script \
+#          --from-file=embed_to_milvus.py=spark/embed_to_milvus.py \
+#          -n smartshop --dry-run=client -o yaml | oc apply -f -
 #
-# USAGE (after image rebuild)
+# USAGE
 #   set -a; source .env; set +a
 #   envsubst < infrastructure/openshift/spark-application-embedding.yaml | oc apply -f -
+#   oc logs -n smartshop smartshop-embed-to-milvus-driver -f
+#
+# CLEAN UP
+#   oc delete sparkapplication smartshop-embed-to-milvus -n smartshop
 apiVersion: sparkoperator.k8s.io/v1beta2
 kind: SparkApplication
 metadata:
-  name: smartshop-embedding-generation
+  name: smartshop-embed-to-milvus
   namespace: ${NAMESPACE}
 spec:
   type: Python
@@ -32,14 +33,18 @@ spec:
   mode: cluster
   image: "${SPARK_RAPIDS_IMAGE}"
   imagePullPolicy: Always
-  mainApplicationFile: "local:///opt/spark/work-dir/embedding_generation.py"
+  mainApplicationFile: "local:///opt/spark/work-dir/embed_to_milvus.py"
   arguments:
     - "--input"
     - "s3a://${S3_RAW_BUCKET}/raw/reviews/Electronics/,s3a://${S3_RAW_BUCKET}/raw/reviews/Books/,s3a://${S3_RAW_BUCKET}/raw/reviews/Home_and_Kitchen/"
-    - "--output"
+    - "--parquet-output"
     - "s3a://${S3_EMBEDDINGS_BUCKET}/review_embeddings/"
+    - "--milvus-uri"
+    - "http://milvus.${NAMESPACE}.svc.cluster.local:19530"
+    - "--collection"
+    - "smartshop_review_embeddings"
     - "--max-reviews"
-    - "5000000"   # 5M is sufficient for Feast vector store + Summit demo
+    - "${EMBED_MAX_ROWS}"
   sparkVersion: "3.5.3"
   restartPolicy:
     type: Never
@@ -49,53 +54,54 @@ spec:
     fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
     fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
     fs.s3a.metadatastore.impl: "org.apache.hadoop.fs.s3a.s3guard.NullMetadataStore"
+    fs.s3a.connection.ssl.enabled: "false"
   sparkConf:
     spark.sql.adaptive.enabled: "true"
     spark.sql.shuffle.partitions: "200"
-    spark.jars: "http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.smartshop.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
+    spark.jars: "http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
     spark.ui.prometheus.enabled: "true"
     spark.executor.processTreeMetrics.enabled: "true"
     spark.metrics.conf: "/etc/spark-metrics/metrics.properties"
-    # Spark History Server — event logs written to MinIO s3a://
     spark.eventLog.enabled: "true"
     spark.eventLog.dir: "s3a://smartshop-spark-logs/events"
     spark.eventLog.compress: "true"
-    # Transformers model download cache → /tmp (work-dir not writable by uid 1001 without rebuild)
+    # Model downloads to /tmp on each executor (sentence-transformers auto-caches)
     spark.executorEnv.TRANSFORMERS_CACHE: "/tmp/hf-cache"
     spark.executorEnv.HF_HOME: "/tmp/hf-home"
   driver:
-    cores: ${SPARK_DRIVER_CORES:-2}
-    memory: "${SPARK_DRIVER_MEMORY:-4g}"
+    cores: 2
+    memory: "16g"
     serviceAccount: spark
-    javaOptions: "-Duser.dir=/tmp"
+    javaOptions: "-Duser.dir=/tmp -Dcom.redhat.fips=false"
+    env:
+      - name: HF_HOME
+        value: "/tmp/hf-home"
+      - name: TRANSFORMERS_CACHE
+        value: "/tmp/hf-cache"
     envFrom:
       - secretRef:
           name: smartshop-credentials
-      - secretRef:
-          name: smartshop-mlflow-token
     volumeMounts:
       - name: spark-metrics-config
         mountPath: /etc/spark-metrics
       - name: embedding-script
-        mountPath: /opt/spark/work-dir/embedding_generation.py
-        subPath: embedding_generation.py
+        mountPath: /opt/spark/work-dir/embed_to_milvus.py
+        subPath: embed_to_milvus.py
   executor:
     cores: 4
     instances: 4
     memory: "16g"
     memoryOverhead: "4g"
-    javaOptions: "-Duser.dir=/tmp"
+    javaOptions: "-Duser.dir=/tmp -Dcom.redhat.fips=false"
     envFrom:
       - secretRef:
           name: smartshop-credentials
-      - secretRef:
-          name: smartshop-mlflow-token
     volumeMounts:
       - name: spark-metrics-config
         mountPath: /etc/spark-metrics
       - name: embedding-script
-        mountPath: /opt/spark/work-dir/embedding_generation.py
-        subPath: embedding_generation.py
+        mountPath: /opt/spark/work-dir/embed_to_milvus.py
+        subPath: embed_to_milvus.py
   volumes:
     - name: spark-metrics-config
       configMap:

@@ -9,20 +9,22 @@ The raw `timestamp` field is BIGINT (unix ms) — this converts it.
 
 Run inside the feast pod after full download completes:
 
-  oc exec -n smartshop <feast-pod> -c offline -- bash -c '
-    export AWS_ACCESS_KEY_ID=minio
-    export AWS_SECRET_ACCESS_KEY=minio123
+  oc exec -n $NAMESPACE <feast-pod> -c offline -- bash -c '
+    export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+    export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
     python3 /feast-data/smartshop/feast/feature_repo/preprocess_reviews_full.py
   '
 """
 
+import os
 import time
 from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
 
-MINIO = "http://minio.smartshop.svc.cluster.local:9000"
-RAW   = "s3a://smartshop-raw/raw/reviews"
-OUT   = "s3a://smartshop-raw/processed/reviews"
+MINIO = os.environ.get("AWS_ENDPOINT_URL_S3", os.environ.get("MINIO_ENDPOINT", "http://minio.smartshop.svc.cluster.local:9000"))
+_BUCKET = os.environ.get("S3_RAW_BUCKET", "smartshop-raw")
+RAW   = f"s3a://{_BUCKET}/raw/reviews"
+OUT   = f"s3a://{_BUCKET}/processed/reviews"
 CATEGORIES = ["Electronics", "Books", "Home_and_Kitchen"]
 
 spark = (

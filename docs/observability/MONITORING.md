@@ -22,7 +22,7 @@
 ## Why this matters
 
 Running **NVIDIA RAPIDS on Spark** inside **Kubeflow's Spark Operator**, combined with
-**Slurm-dispatched FSDP training** and **Feast on RHOAI** is genuinely novel territory.
+**QLoRA/FSDP training** and **Feast on RHOAI** is genuinely novel territory.
 Very few people have done this end-to-end on OpenShift. This document captures every
 metric layer so findings can be reproduced, refined, and shared with the wider community.
 
@@ -36,8 +36,8 @@ metric layer so findings can be reproduced, refined, and shared with the wider c
 │                                                                 │
 │  ┌───────────────┐   ┌──────────────┐   ┌──────────────────┐   │
 │  │  Spark RAPIDS │   │ Feast (RHOAI │   │ Kubeflow Trainer  │   │
-│  │  SparkApp     │──▶│  Operator)   │──▶│ DDP / FSDP+Slurm │   │
-│  │  A100 × 4     │   │  dask + Redis│   │ A100 × 4–8       │   │
+│  │  SparkApp     │──▶│  Operator)   │──▶│ DDP / QLoRA+FSDP │   │
+│  │  A100 × 4     │   │  Spark+Redis │   │ A100 × 4–8       │   │
 │  └───────┬───────┘   └──────────────┘   └────────┬─────────┘   │
 │          │                                        │             │
 │  ┌───────▼───────────────────────────────────────▼─────────┐   │
@@ -170,7 +170,7 @@ irate(DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL[2m])
 Screenshot the GPU utilization spike during the RAPIDS job window — this is the visual proof.
 
 > **Note:** `DCGM_FI_PROF_SM_ACTIVE` is NOT emitted by the DCGM exporter on this cluster.
-> Use `DCGM_FI_PROF_GR_ENGINE_ACTIVE` instead. Both `grafana.yaml` and `OBSERVABILITY.md`
+> Use `DCGM_FI_PROF_GR_ENGINE_ACTIVE` instead. Both `grafana.yaml` and this doc
 > reflect this fix.
 
 ---
@@ -188,7 +188,7 @@ driver and executor pods with `spark-role=driver|executor` labels on port `4040`
 
 ---
 
-### Layer 6 — Slurm + FSDP training metrics
+### Layer 6 — LLM QLoRA/FSDP training metrics
 
 #### NCCL debug bandwidth
 
@@ -237,7 +237,7 @@ oc logs -n smartshop -l app=feast-smartshop-feast | grep -i "materialize\|writte
 **What to capture:**
 - Time to materialize user/item features into Redis
 - Number of rows pushed to the online store
-- Any S3 read errors (dask offline store reads from MinIO)
+- Any S3 read errors (Spark offline store reads from MinIO)
 
 ---
 
@@ -333,7 +333,7 @@ print(f'GPU speedup: {cpu/rapids:.2f}×  ({cpu}s → {rapids}s)')
 | Topic | Why it's hard to find documented |
 |---|---|
 | RAPIDS on OpenShift | OCP SCCs restrict privileged GPU init; SparkApplication GPU resource block syntax differs from plain K8s docs |
-| RAPIDS + Feast in one pipeline | No public example of RAPIDS doing feature ETL → Feast dask offline store → Redis online store |
+| RAPIDS + Feast in one pipeline | No public example of RAPIDS doing feature ETL → Feast Spark offline store → Redis online store |
 | Kubeflow Trainer → Slurm dispatch | `ClusterTrainingRuntime` with `slinky` plugin is weeks old; zero community write-ups |
 | FSDP on RHOAI multi-node | NCCL over OVN-K SDN requires `NCCL_IB_DISABLE=1` + host network or SR-IOV for full bandwidth |
 | Feast on RHOAI Operator | `FeatureStore` CRD is RHOAI-specific; upstream Feast docs don't cover it |

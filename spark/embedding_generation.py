@@ -5,8 +5,8 @@ via Spark UDFs. Outputs embeddings as Parquet files for Feast vector store.
 
 Usage:
     spark-submit spark/embedding_generation.py \
-        --input s3a://smartshop/raw/ \
-        --output s3a://smartshop/features/review_embeddings/
+        --input s3a://smartshop-raw/ \
+        --output s3a://smartshop-embeddings/review_embeddings/
 """
 
 import argparse

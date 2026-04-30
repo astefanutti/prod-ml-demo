@@ -1,0 +1,37 @@
+---
+# ServiceMonitor for SmartShop inference endpoints.
+# Scrapes /metrics from rec, rag, and llm serving pods via the KServe predictor services.
+#
+# Prerequisites:
+#   - User workload monitoring enabled (user-workload-monitoring.yaml)
+#   - Serving pods expose /metrics (prometheus_client make_asgi_app mounted)
+#
+# APPLY:
+#   envsubst < infrastructure/openshift/serving-metrics-monitor.yaml | oc apply -f -
+#
+# VERIFY:
+#   oc get servicemonitor -n ${NAMESPACE}
+#   OCP Console → Observe → Targets (switch to "User" data source)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: smartshop-serving-metrics
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+spec:
+  selector:
+    matchExpressions:
+      - key: serving.kserve.io/inferenceservice
+        operator: In
+        values:
+          - smartshop-rec
+          - smartshop-rag
+          - smartshop-llm
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+  namespaceSelector:
+    matchNames:
+      - ${NAMESPACE}

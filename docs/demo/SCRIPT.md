@@ -17,12 +17,13 @@
 | RHOAI Dashboard | `https://rh-ai.${OC_CLUSTER_DOMAIN}` |
 | Grafana (GPU + Redis metrics) | `https://grafana-smartshop.${OC_CLUSTER_DOMAIN}` |
 | Spark History Server | `https://spark-history-smartshop.${OC_CLUSTER_DOMAIN}` |
-| MLflow UI | `https://mlflow-ui-redhat-ods-applications.${OC_CLUSTER_DOMAIN}` |
+| MLflow UI | `https://mlflow-redhat-ods-applications.${OC_CLUSTER_DOMAIN}` |
 | MinIO Console | `https://minio-console-smartshop.${OC_CLUSTER_DOMAIN}` |
 | Feast UI | `https://feast-smartshop-feast-ui-smartshop.${OC_CLUSTER_DOMAIN}` |
 | RedisInsight | `https://redisinsight-smartshop.${OC_CLUSTER_DOMAIN}` |
 | Attu (Milvus UI) | `https://attu-smartshop.${OC_CLUSTER_DOMAIN}` |
-| Gradio Demo UI | *(KServe route after `make demo`)* |
+| Grafana Inference Metrics | `https://grafana-smartshop.${OC_CLUSTER_DOMAIN}/d/smartshop-inference` |
+| Gradio Demo UI | *(local: `make demo`, or deploy as Route)* |
 
 ---
 
@@ -189,7 +190,7 @@ oc get trainjob -n smartshop
 
 ### 5b. MLflow — show experiment tracking
 
-1. Open **MLflow UI**: `https://mlflow-ui-redhat-ods-applications.${OC_CLUSTER_DOMAIN}`
+1. Open **MLflow UI**: `https://mlflow-redhat-ods-applications.${OC_CLUSTER_DOMAIN}`
 2. Select the `smartshop` workspace (top-left dropdown)
 3. Open the `smartshop-feature-engineering` experiment — show the 2 runs (cpu-baseline + rapids) side by side
 4. Click **Compare** — show `total_elapsed_s` and `throughput_rows_per_s` in the comparison view
@@ -201,7 +202,7 @@ oc get trainjob -n smartshop
 > The RHOAI Model Registry registers a pointer to that same S3 path — no re-upload.
 > KServe reads `storageUri` at pod startup — still no copy. The same bytes go from training to serving."
 
-### 5c. LLM fine-tuning — Slurm + FSDP
+### 5c. LLM fine-tuning — QLoRA + FSDP
 
 ```bash
 # Show Slurm nodes:
@@ -270,7 +271,7 @@ smartshop-rag     https://smartshop-rag-smartshop.${OC_CLUSTER_DOMAIN}   True
 >
 > **Spark Operator** — submit SparkApplications as Kubernetes resources. No Spark cluster to manage.
 >
-> **Kubeflow Trainer** — one CRD for all distributed training patterns: DDP, FSDP, and Slurm dispatch.
+> **Kubeflow Trainer** — one CRD for all distributed training patterns: DDP and QLoRA/FSDP.
 >
 > **Feast** — operator-managed feature store. Offline store on MinIO, online store on Redis,
 > vector store on Milvus. Training-serving consistency enforced at the schema level.
@@ -297,8 +298,8 @@ oc logs smartshop-feature-engineering-cpu-baseline-driver -n smartshop | grep '\
 
 # Check Feast materialization status:
 oc exec -it -n smartshop \
-  $(oc get pod -n smartshop -l app.kubernetes.io/name=feast-smartshop -o jsonpath='{.items[0].metadata.name}') \
-  -c registry -- feast feature-views list
+  $(oc get pod -n smartshop -l feast.dev/name=smartshop-feast -o jsonpath='{.items[0].metadata.name}') \
+  -c registry -- feast -c /feast-data/smartshop/feast/feature_repo feature-views list
 
 # Check KServe endpoints:
 oc get inferenceservice -n smartshop

@@ -1,0 +1,80 @@
+---
+# milvus-embed-job.yaml — Simple K8s Job fallback for embedding push (no Spark)
+#
+# PREFERRED approach: Use the SparkApplication (smartshop-embed-to-milvus) which
+# distributes embedding generation across 4 executors with GPU acceleration.
+# See infrastructure/openshift/feast-materialize-embeddings-job.yaml for the Spark version.
+#
+# This Job is a lightweight alternative for small datasets or testing.
+# Uses sentence-transformers to generate 384-dim embeddings from raw reviews,
+# then bulk-inserts into Milvus via pymilvus.
+#
+# Prerequisites:
+#   1. Milvus running: oc get svc milvus -n smartshop
+#   2. Secrets: smartshop-credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+#   3. Script ConfigMap:
+#        oc create configmap smartshop-milvus-embed-script \
+#          --from-file=push_embeddings_to_milvus.py=scripts/push_embeddings_to_milvus.py \
+#          -n smartshop --dry-run=client -o yaml | oc apply -f -
+#
+# Apply:
+#   set -a; source .env; set +a
+#   envsubst < infrastructure/openshift/milvus-embed-job.yaml | oc apply -f -
+#   oc logs -n smartshop job/milvus-embed-direct -f
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: milvus-embed-direct
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: milvus-embeddings
+spec:
+  ttlSecondsAfterFinished: 86400
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: smartshop
+        component: milvus-embeddings
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: embed-to-milvus
+          image: registry.access.redhat.com/ubi9/python-312:1
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -c
+            - |
+              pip install --quiet --no-cache-dir \
+                sentence-transformers pymilvus s3fs pyarrow
+              python3 /scripts/push_embeddings_to_milvus.py \
+                --input "${EMBED_INPUT_PATH}" \
+                --milvus-uri "http://milvus.${NAMESPACE}.svc.cluster.local:19530" \
+                --collection smartshop_review_embeddings \
+                --max-rows ${EMBED_MAX_ROWS:-500000} \
+                --batch-size 10000
+          env:
+            - name: AWS_ENDPOINT_URL_S3
+              value: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+          envFrom:
+            - secretRef:
+                name: smartshop-credentials
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: "16Gi"
+            limits:
+              cpu: "8"
+              memory: "32Gi"
+      volumes:
+        - name: script
+          configMap:
+            name: smartshop-milvus-embed-script
+            defaultMode: 0644

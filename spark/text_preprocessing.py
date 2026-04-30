@@ -9,8 +9,8 @@ Outputs JSONL files ready for fine-tuning.
 
 Usage:
     spark-submit spark/text_preprocessing.py \
-        --input s3a://smartshop/raw/ \
-        --output s3a://smartshop/llm_data/
+        --input s3a://smartshop-raw/ \
+        --output s3a://smartshop-features/llm_data/
 """
 
 import argparse

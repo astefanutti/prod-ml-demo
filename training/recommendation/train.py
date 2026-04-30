@@ -283,6 +283,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--embed-dim", type=int, default=64)
     parser.add_argument("--hidden-dim", type=int, default=128)
+    parser.add_argument("--max-rows", type=int, default=None,
+                        help="Sample N interactions for fast iteration (default: use all)")
     feast_group = parser.add_mutually_exclusive_group()
     feast_group.add_argument("--use-feast", dest="use_feast", action="store_true",
                              default=bool(os.environ.get("FEAST_REPO_PATH")),
@@ -342,6 +344,9 @@ def main():
             # Load interactions only (needed as entity_df for the Feast join)
             kw = {"storage_options": storage_options} if storage_options else {}
             interactions_df = pd.read_parquet(f"{args.data_dir}/interactions", **kw)
+            if args.max_rows and len(interactions_df) > args.max_rows:
+                interactions_df = interactions_df.sample(n=args.max_rows, random_state=42)
+                print(f"Sampled {args.max_rows:,} / {len(interactions_df):,} interactions")
             df = _load_features_via_feast(interactions_df, feast_repo_path)
         else:
             df = _load_features_direct(

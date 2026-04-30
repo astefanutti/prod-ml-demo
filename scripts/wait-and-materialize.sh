@@ -38,7 +38,7 @@ NAMESPACE="${NAMESPACE:-smartshop}"
 SPARK_PROFILE="${SPARK_PROFILE:-cpu}"        # cpu | rapids
 START_DATE="${START_DATE:-2014-01-01T00:00:00}"
 END_DATE="${END_DATE:-2018-12-31T23:59:59}"
-REDIS_PASSWORD="${REDIS_PASSWORD:-smartshop-redis-2026}"
+REDIS_PASSWORD="${REDIS_PASSWORD:?REDIS_PASSWORD must be set in .env}"
 FEATURE_REPO="/feast-data/smartshop/feast/feature_repo"
 
 log()  { echo "[$(date '+%H:%M:%S')] $*"; }
@@ -95,8 +95,8 @@ log "Redis flushed."
 # ── 4. feast apply ────────────────────────────────────────────────────────────
 log "Running feast apply ..."
 oc exec -n "$NAMESPACE" "$FEAST_POD" -c offline -- bash -c "
-  export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minio}
-  export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minio123}
+  export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:?Set in .env}
+  export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:?Set in .env}
   cd ${FEATURE_REPO}
   feast apply 2>&1
 " | tail -10
@@ -106,8 +106,8 @@ log "Starting feast materialize [${SPARK_PROFILE}] ${START_DATE} → ${END_DATE}
 WALL_START=$(date +%s)
 
 oc exec -n "$NAMESPACE" "$FEAST_POD" -c offline -- bash -c "
-  export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-minio}
-  export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-minio123}
+  export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:?Set in .env}
+  export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:?Set in .env}
   cd ${FEATURE_REPO}
   feast materialize '${START_DATE}' '${END_DATE}' 2>&1
 "
