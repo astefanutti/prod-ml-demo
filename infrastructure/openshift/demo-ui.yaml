@@ -1,0 +1,114 @@
+---
+# SmartShop Demo UI — Gradio application
+#
+# Prerequisites:
+#   - demo-ui image built: oc start-build demo-ui -n ${NAMESPACE} --follow
+#     OR set DEMO_UI_IMAGE to a pre-pushed quay.io image
+#   - InferenceServices ready: smartshop-rec, smartshop-llm, smartshop-rag
+#   - Grafana route available (for embedded dashboards)
+#
+# Apply:
+#   set -a; source .env; set +a
+#   envsubst < infrastructure/openshift/demo-ui.yaml | oc apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smartshop-demo-ui
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: demo-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: smartshop
+      component: demo-ui
+  template:
+    metadata:
+      labels:
+        app: smartshop
+        component: demo-ui
+    spec:
+      containers:
+        - name: demo-ui
+          image: ${DEMO_UI_IMAGE:-quay.io/abdhumal/smartshop-demo-ui:latest}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 7860
+              name: http
+              protocol: TCP
+          env:
+            - name: RECOMMEND_URL
+              value: "${RECOMMEND_URL:-http://smartshop-rec-predictor.${NAMESPACE}.svc.cluster.local/v1/models/smartshop-rec:predict}"
+            - name: LLM_URL
+              value: "${LLM_URL:-http://smartshop-llm-predictor.${NAMESPACE}.svc.cluster.local/v1/completions}"
+            - name: RAG_URL
+              value: "${RAG_URL:-http://smartshop-rag-predictor.${NAMESPACE}.svc.cluster.local/v1/ask}"
+            - name: GRAFANA_URL
+              value: "${GRAFANA_URL}"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7860
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 7860
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smartshop-demo-ui
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: demo-ui
+spec:
+  selector:
+    app: smartshop
+    component: demo-ui
+  ports:
+    - name: http
+      port: 7860
+      targetPort: 7860
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: smartshop-demo-ui
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: demo-ui
+  annotations:
+    haproxy.router.openshift.io/auth-type: none
+    cookie.openshift.io/disable: "true"
+spec:
+  to:
+    kind: Service
+    name: smartshop-demo-ui
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

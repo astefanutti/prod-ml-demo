@@ -49,7 +49,7 @@ spec:
     spec:
       containers:
         - name: redis-exporter
-          image: oliver006/redis_exporter:latest
+          image: ${REDIS_EXPORTER_IMAGE:-oliver006/redis_exporter:latest}
           ports:
             - containerPort: 9121
               name: metrics

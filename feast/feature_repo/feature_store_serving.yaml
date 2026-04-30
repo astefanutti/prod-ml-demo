@@ -7,7 +7,7 @@ provider: local
 
 registry:
   registry_type: remote
-  path: feast-smartshop-feast-registry.smartshop.svc.cluster.local:443
+  path: feast-smartshop-feast-registry.${NAMESPACE}.svc.cluster.local:443
   cert: /var/run/secrets/feast-registry-tls/service-ca.crt
 
 offline_store:
@@ -15,7 +15,7 @@ offline_store:
 
 online_store:
   type: milvus
-  host: "http://milvus.smartshop.svc.cluster.local"
+  host: "http://milvus.${NAMESPACE}.svc.cluster.local"
   port: 19530
   vector_enabled: true
   embedding_dim: 384

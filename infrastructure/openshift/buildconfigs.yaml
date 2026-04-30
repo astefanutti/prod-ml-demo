@@ -274,7 +274,68 @@ spec:
   failedBuildsHistoryLimit: 2
 
 ---
+# BuildConfig — rag-server (RAG serving image — same base as rec-server)
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: rag-server
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.serving
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-rag-server:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
 
+---
+# BuildConfig — demo-ui (Gradio demo application)
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: demo-ui
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.demo-ui
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-demo-ui:latest
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "4Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
 # BuildConfig — feast-spark-executor-embeddings
 # Extends feast-spark-executor (CPU) with sentence-transformers + pre-cached all-MiniLM-L6-v2.
 # Used as the executor image for feast materialize on review_embeddings @batch_feature_view.

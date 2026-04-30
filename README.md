@@ -15,7 +15,7 @@ This repository is a **fully deployable, end-to-end ML platform** for an e-comme
 | **ML Platform Engineers** | Fully working OpenShift manifests for every component — copy, adapt, deploy |
 | **Data Scientists** | End-to-end pipeline from raw S3 data to live inference endpoints via Feast + MLflow |
 | **OpenShift Admins** | Namespace, RBAC, BuildConfig, and operator configuration reference |
-| **Demo Presenters** | See [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md) for the guided live demo narrative |
+| **Demo Presenters** | See [docs/demo/SCRIPT.md](docs/demo/SCRIPT.md) for the guided live demo narrative |
 
 ---
 
@@ -29,8 +29,8 @@ SmartShop AI is a production e-commerce ML platform that:
 
 ## Architecture
 
-See [docs/SETUP.md](docs/SETUP.md) for the full setup guide, component rationale, and storage layout.  
-See [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md) for the step-by-step guided demo narrative.
+See [docs/setup/](docs/setup/) for the full phase-by-phase setup guides.  
+See [docs/demo/SCRIPT.md](docs/demo/SCRIPT.md) for the step-by-step guided demo narrative.
 
 ```mermaid
 flowchart TD
@@ -249,8 +249,8 @@ make serve-k8s             # recommendation + review summary + RAG Q&A endpoints
 make demo                  # opens the demo UI, calls all 3 endpoints
 ```
 
-For a complete walkthrough of every step including operator setup, see [docs/SETUP.md](docs/SETUP.md).  
-For the guided live demo narrative, see [docs/DEMO-SCRIPT.md](docs/DEMO-SCRIPT.md).
+For a complete walkthrough of every step including operator setup, see [docs/setup/](docs/setup/).  
+For the guided live demo narrative, see [docs/demo/SCRIPT.md](docs/demo/SCRIPT.md).
 
 ## Project Structure
 
@@ -270,9 +270,11 @@ prod-ml-demo/
 ├── data/                            # Download scripts + sample data (gitignored)
 ├── demo/                            # Gradio demo UI (3 tabs: rec · summarize · Q&A)
 ├── docs/
-│   ├── SETUP.md                     # Full setup guide (start here)
-│   ├── demo-setup-todo.md           # Phase-by-phase task tracker
-│   └── assets/                      # Screenshots referenced in SETUP.md
+│   ├── setup/                       # Phase-by-phase setup guides (01-prerequisites → 07-automation)
+│   ├── demo/SCRIPT.md               # Guided live demo narrative
+│   ├── feast/                       # Feast architecture + BFV design docs
+│   ├── observability/               # Monitoring & metrics setup
+│   └── architecture.md              # Full system architecture overview
 ├── feast/
 │   └── feature_repo/                # Feast feature views, entities, feature_store.yaml
 ├── infrastructure/
@@ -285,10 +287,10 @@ prod-ml-demo/
 │   └── openshift/
 │       ├── imagestreams.yaml        # ImageStream CRs (in-cluster image registry)
 │       ├── buildconfigs.yaml        # BuildConfig CRs (on-cluster image builds)
-│       ├── spark-application.yaml   # SparkApplication: feature eng + text + embeddings
-│       ├── spark-application-rapids.yaml  # RAPIDS GPU variant (optional)
+│       ├── spark-application-*.yaml  # SparkApplications: CPU baseline, text, RAPIDS, embeddings
 │       ├── trainjobs.yaml           # TrainJob: DDP rec model + FSDP LLM
-│       └── inferenceservices.yaml   # KServe InferenceService: rec + llm + rag
+│       ├── serving-runtimes.yaml    # KServe: ServingRuntimes + InferenceServices + ServiceMonitor
+│       └── demo-ui.yaml            # Gradio demo UI: Deployment + Service + Route
 ├── notebooks/                       # Jupyter notebooks for exploration
 ├── pipelines/
 │   └── e2e_pipeline.py              # Kubeflow Pipeline (full end-to-end DAG)

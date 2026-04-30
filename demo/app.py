@@ -122,9 +122,9 @@ EXAMPLE_REVIEWS = [
 ]
 
 EXAMPLE_QUESTIONS = [
-    ["Is the noise cancellation good enough for flights?", ""],
-    ["How's the battery life for all-day use?", ""],
-    ["Is this worth the price compared to competitors?", ""],
+    ["Is the noise cancellation good enough for flights?", "B07NW1CG2S"],
+    ["How's the battery life for all-day use?", "B07NW1CG2S"],
+    ["Is this worth the price compared to competitors?", "0060177241"],
 ]
 
 # ── Prometheus Helpers ────────────────────────────────────────────────────────
@@ -178,9 +178,31 @@ def _score_bar(score: float, max_score: float = 1.0) -> str:
         f'<div style="flex:1;height:6px;background:var(--border);border-radius:3px;overflow:hidden;">'
         f'<div style="width:{pct}%;height:100%;background:linear-gradient(90deg,#2563eb,var(--accent));border-radius:3px;"></div>'
         f'</div>'
-        f'<span style="font-size:13px;color:var(--text-secondary);min-width:50px;">{score:.3f}</span>'
+        f'<span style="font-size:13px;color:var(--text-secondary);min-width:50px;">{pct}% match</span>'
         f'</div>'
     )
+
+
+CATEGORY_MAP = {
+    "B09": ("Electronics", "🎧"),
+    "B08": ("Electronics", "🎧"),
+    "B07": ("Electronics", "🎧"),
+    "B01": ("Gadgets & Accessories", "🔌"),
+    "B00": ("Home & Kitchen", "🏠"),
+    "B0": ("Electronics", "🎧"),
+    "19": ("Books — Non-Fiction", "📚"),
+    "05": ("Books — Reference", "📖"),
+    "03": ("Books — Fiction", "📕"),
+    "0": ("Books", "📚"),
+    "1": ("Books", "📚"),
+}
+
+
+def _guess_category(asin: str) -> tuple[str, str]:
+    for prefix, (cat, icon) in CATEGORY_MAP.items():
+        if asin.startswith(prefix):
+            return cat, icon
+    return "General", "📦"
 
 
 def _status_strip_html() -> str:
@@ -228,39 +250,52 @@ def get_recommendations(user_id: str, top_k: int = 10):
 
         if response.ok:
             recs = response.json()["recommendations"]
-            rows = ""
-            for i, rec in enumerate(recs, 1):
-                rows += (
-                    f'<tr>'
-                    f'<td style="text-align:center;font-weight:600;color:var(--accent);">#{i}</td>'
-                    f'<td><code>{rec["item_id"]}</code></td>'
-                    f'<td>{_score_bar(rec["score"])}</td>'
-                    f'</tr>'
-                )
-            table = (
-                f'<table style="width:100%;border-collapse:collapse;">'
-                f'<thead><tr style="border-bottom:1px solid var(--border);">'
-                f'<th style="width:50px;padding:8px;color:var(--text-secondary);">Rank</th>'
-                f'<th style="padding:8px;color:var(--text-secondary);text-align:left;">Item (ASIN)</th>'
-                f'<th style="padding:8px;color:var(--text-secondary);text-align:left;">Relevance Score</th>'
-                f'</tr></thead><tbody>{rows}</tbody></table>'
-            )
+            top_score = recs[0]["score"] if recs else 1.0
 
-            badge = (
-                f'<div style="margin-top:12px;">'
-                f'{_latency_pill(ms)} '
-                f'{_infra_badges(["KServe", "Feast → Redis <1ms", "PyTorch DDP trained"])}'
+            pipeline = (
+                f'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">'
+                f'<div class="pipeline-step done">Feast Lookup<br><small>User features from Redis · &lt;1ms</small></div>'
+                f'<span class="pipeline-arrow">→</span>'
+                f'<div class="pipeline-step done">Two-Tower Model<br><small>Score {len(recs):,} items · {ms:.0f}ms</small></div>'
+                f'<span class="pipeline-arrow">→</span>'
+                f'<div class="pipeline-step done">Top-K Ranking<br><small>torch.topk · {len(recs)} results</small></div>'
                 f'</div>'
             )
+
+            cards = ""
+            for i, rec in enumerate(recs, 1):
+                cat, icon = _guess_category(rec["item_id"])
+                pct = int(rec["score"] / top_score * 100) if top_score else 0
+                bar_color = "#2563eb" if pct > 60 else "#f59e0b" if pct > 30 else "#94a3b8"
+                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"#{i}"
+                cards += (
+                    f'<div style="display:flex;align-items:center;gap:12px;padding:10px 12px;'
+                    f'border-bottom:1px solid var(--border);">'
+                    f'<span style="font-size:18px;min-width:28px;text-align:center;">{medal}</span>'
+                    f'<span style="font-size:22px;">{icon}</span>'
+                    f'<div style="flex:1;min-width:0;">'
+                    f'<div style="font-weight:500;color:var(--text-primary);font-size:14px;">{cat}</div>'
+                    f'<div style="font-size:11px;color:var(--text-muted);font-family:monospace;">{rec["item_id"]}</div>'
+                    f'</div>'
+                    f'<div style="width:120px;text-align:right;">'
+                    f'<div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:4px;">'
+                    f'<div style="width:{pct}%;height:100%;background:{bar_color};border-radius:3px;"></div></div>'
+                    f'<span style="font-size:12px;font-weight:600;color:var(--text-secondary);">{pct}%</span>'
+                    f'</div>'
+                    f'</div>'
+                )
+            table = f'<div style="border:1px solid var(--border);border-radius:10px;overflow:hidden;">{cards}</div>'
+
             behind = (
                 f'<details style="margin-top:14px;"><summary style="color:var(--text-muted);font-size:12px;cursor:pointer;">Behind the scenes</summary>'
                 f'<div class="source-card" style="margin-top:8px;font-size:12px;line-height:1.8;color:var(--text-secondary);">'
                 f'<strong>Feast online lookup:</strong> user features retrieved in &lt;1ms from Redis<br>'
-                f'<strong>Model:</strong> Two-Tower Neural CF, trained with PyTorch DDP via Kubeflow TrainJob<br>'
-                f'<strong>Serving:</strong> KServe InferenceService with auto-scaling'
+                f'<strong>Model:</strong> Two-Tower Neural CF (1.6M items), trained with PyTorch DDP via Kubeflow TrainJob<br>'
+                f'<strong>Scoring:</strong> Full-catalog dot product — all items scored, not sampled<br>'
+                f'<strong>Serving:</strong> KServe InferenceService with pre-computed item embeddings'
                 f'</div></details>'
             )
-            return table + badge + behind, _status_strip_html()
+            return pipeline + table + behind, _status_strip_html()
         return f'<p style="color:var(--red-text);">Error {response.status_code}: {response.text[:200]}</p>', _status_strip_html()
     except requests.ConnectionError:
         return '<p style="color:var(--red-text);">Recommendation service unavailable. Check KServe deployment.</p>', _status_strip_html()
@@ -302,24 +337,33 @@ def summarize_review(product_name: str, review_text: str):
             tokens = len(text.split())
             tok_per_sec = tokens / (ms / 1000) if ms > 0 else 0
 
+            pipeline = (
+                f'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">'
+                f'<div class="pipeline-step done">Build Prompt<br><small>[INST] template · review text</small></div>'
+                f'<span class="pipeline-arrow">→</span>'
+                f'<div class="pipeline-step done">Mistral-7B + LoRA<br><small>vLLM inference · {ms:.0f}ms</small></div>'
+                f'<span class="pipeline-arrow">→</span>'
+                f'<div class="pipeline-step done">Sentiment + Summary<br><small>{tokens} tokens · {tok_per_sec:.0f} tok/s</small></div>'
+                f'</div>'
+            )
+
             result = (
                 f'<div class="result-card">'
                 f'<div style="margin-bottom:12px;">{text}</div>'
                 f'<span style="background:{s_color}20;color:{s_color};padding:4px 12px;'
                 f'border-radius:20px;font-weight:700;font-size:13px;">{sentiment}</span>'
                 f'</div>'
-                f'<div style="margin-top:12px;">'
-                f'{_latency_pill(ms)} '
-                f'{_infra_badges(["vLLM", "Mistral-7B-Instruct", "LoRA rank 16", f"{tok_per_sec:.0f} tok/s"])}'
-                f'</div>'
+            )
+
+            behind = (
                 f'<details style="margin-top:14px;"><summary style="color:var(--text-muted);font-size:12px;cursor:pointer;">Pipeline trace</summary>'
                 f'<div class="source-card" style="margin-top:8px;font-size:12px;line-height:1.8;color:var(--text-secondary);">'
                 f'<strong>Model:</strong> Mistral-7B-Instruct fine-tuned with QLoRA + FSDP via Kubeflow TrainJob<br>'
-                f'<strong>Dataset:</strong> Amazon Reviews 2023 (Electronics), instruction-tuned for review summarization<br>'
-                f'<strong>Serving:</strong> vLLM on KServe with LoRA adapter hot-loading'
+                f'<strong>Adapter:</strong> LoRA rank 16, hot-loaded at serving time (no base model retraining)<br>'
+                f'<strong>Serving:</strong> vLLM on KServe with continuous batching + PagedAttention'
                 f'</div></details>'
             )
-            return result, _status_strip_html()
+            return pipeline + result + behind, _status_strip_html()
         return f'<p style="color:var(--red-text);">Error {response.status_code}: {response.text[:300]}</p>', _status_strip_html()
     except requests.ConnectionError:
         return '<p style="color:var(--red-text);">LLM service unavailable. Check KServe deployment.</p>', _status_strip_html()
@@ -455,23 +499,43 @@ def build_grafana_html() -> str:
             '</div>'
         )
     base = GRAFANA_URL.rstrip("/")
-    panels = [
-        (f"{base}/d-solo/smartshop-inference/smartshop-inference-metrics?orgId=1&panelId=1&refresh=10s", "Inference Request Rate"),
-        (f"{base}/d-solo/smartshop-inference/smartshop-inference-metrics?orgId=1&panelId=4&refresh=10s", "Latency Breakdown"),
-        (f"{base}/d-solo/smartshop-inference/smartshop-inference-metrics?orgId=1&panelId=2&refresh=10s", "LLM Throughput"),
+    dash = f"{base}/d-solo/smartshop-inference/smartshop-inference-metrics?orgId=1&refresh=10s"
+    row1 = [
+        (f"{dash}&panelId=1", "Request Rate (req/s)"),
+        (f"{dash}&panelId=6", "RAG Latency Breakdown (p95)"),
+        (f"{dash}&panelId=8", "vLLM Token Throughput"),
     ]
-    iframes = ""
-    for url, title in panels:
-        iframes += (
-            f'<div style="flex:1;min-width:300px;">'
-            f'<div style="color:var(--text-secondary);font-size:11px;margin-bottom:4px;">{title}</div>'
-            f'<iframe src="{url}" width="100%" height="220" frameborder="0" '
-            f'style="border-radius:8px;border:1px solid var(--border);"></iframe>'
-            f'</div>'
-        )
+    row2 = [
+        (f"{dash}&panelId=2", "KV Cache Usage %"),
+        (f"{dash}&panelId=5", "vLLM End-to-End Latency"),
+        (f"{dash}&panelId=9", "Inter-Token Latency"),
+    ]
+    stat_row = [
+        (f"{dash}&panelId=10", "Rec — Candidates Scored"),
+        (f"{dash}&panelId=11", "RAG — Sources Retrieved"),
+        (f"{dash}&panelId=12", "Avg Generation Tokens"),
+        (f"{dash}&panelId=13", "Prefill vs Decode (p95)"),
+    ]
+
+    def _iframe_row(panels, height="200"):
+        html = ""
+        for url, title in panels:
+            html += (
+                f'<div style="flex:1;min-width:280px;">'
+                f'<div style="color:var(--text-secondary);font-size:11px;margin-bottom:4px;">{title}</div>'
+                f'<iframe src="{url}" width="100%" height="{height}" frameborder="0" '
+                f'style="border-radius:8px;border:1px solid var(--border);background:var(--bg-card);"></iframe>'
+                f'</div>'
+            )
+        return f'<div style="display:flex;gap:12px;flex-wrap:wrap;">{html}</div>'
+
     return (
-        f'<div style="display:flex;gap:12px;flex-wrap:wrap;">{iframes}</div>'
-        f'<div style="margin-top:12px;text-align:center;">'
+        _iframe_row(row1, "210")
+        + '<div style="margin-top:12px;"></div>'
+        + _iframe_row(row2, "210")
+        + '<div style="margin-top:12px;"></div>'
+        + _iframe_row(stat_row, "130")
+        + f'<div style="margin-top:14px;text-align:center;">'
         f'<a href="{base}/d/smartshop-inference" target="_blank" '
         f'style="color:var(--accent);font-size:13px;">Open Full Grafana Dashboard →</a>'
         f'</div>'
@@ -485,76 +549,169 @@ def refresh_metrics():
 # ── Architecture Diagram ──────────────────────────────────────────────────────
 
 ARCH_HTML = """
-<div style="max-width:900px;margin:20px auto;">
+<div style="max-width:960px;margin:20px auto;">
+
+  <!-- Layer 1: Data -->
+  <div class="arch-section-label">1 · Data Ingestion</div>
   <div class="arch-row">
     <div class="arch-box" style="border-color:#f97316;">
-      <div class="arch-title">Data Source</div>
-      <div class="arch-detail">Amazon Reviews 2023 · 571M reviews<br>HuggingFace Hub → streaming → MinIO S3</div>
-    </div>
-  </div>
-  <div class="arch-arrow">▼</div>
-  <div class="arch-row" style="grid-template-columns:1fr 1fr;">
-    <div class="arch-box" style="border-color:#64748b;">
-      <div class="arch-title">Spark (CPU)</div>
-      <div class="arch-detail">Standard feature engineering<br>Parquet → MinIO</div>
-    </div>
-    <div class="arch-box" style="border-color:#f97316;">
-      <div class="arch-title">RAPIDS</div>
-      <div class="arch-detail">Same code, N× faster<br>Accelerated compute · CUDA</div>
-    </div>
-  </div>
-  <div class="arch-arrow">▼</div>
-  <div class="arch-row">
-    <div class="arch-box" style="border-color:#059669;">
-      <div class="arch-title">Feast Feature Store</div>
-      <div class="arch-detail">Offline: MinIO Parquet → materialize → Redis online<br>Online retrieval &lt;1ms · Milvus for embeddings</div>
-    </div>
-  </div>
-  <div class="arch-arrow">▼</div>
-  <div class="arch-row" style="grid-template-columns:1fr 1fr;">
-    <div class="arch-box" style="border-color:#2563eb;">
-      <div class="arch-title">Rec Model Training</div>
-      <div class="arch-detail">PyTorch DDP · Distributed<br>Kubeflow TrainJob → MLflow → S3</div>
-    </div>
-    <div class="arch-box" style="border-color:#7c3aed;">
-      <div class="arch-title">LLM Fine-Tuning</div>
-      <div class="arch-detail">QLoRA + FSDP · Mistral-7B<br>Kubeflow TrainJob → vLLM deploy</div>
-    </div>
-  </div>
-  <div class="arch-arrow">▼</div>
-  <div class="arch-row">
-    <div class="arch-box" style="border-color:#38bdf8;">
-      <div class="arch-title">KServe InferenceServices</div>
+      <div class="arch-title">Amazon Reviews 2023</div>
       <div class="arch-detail">
-        <span class="infra-badge">smartshop-rec</span>
-        <span class="infra-badge">smartshop-llm</span>
-        <span class="infra-badge">smartshop-rag</span>
-        <br><small style="color:var(--text-muted);">RawDeployment · Prometheus metrics · Auto-scaling</small>
+        571M reviews · 34 categories<br>
+        <small>HuggingFace datasets → streaming download → MinIO S3 (Parquet)</small>
       </div>
     </div>
   </div>
   <div class="arch-arrow">▼</div>
+
+  <!-- Layer 2: Feature Engineering -->
+  <div class="arch-section-label">2 · Feature Engineering</div>
+  <div class="arch-row" style="grid-template-columns:1fr 1fr;">
+    <div class="arch-box" style="border-color:#64748b;">
+      <div class="arch-title">Spark on Kubernetes</div>
+      <div class="arch-detail">
+        SparkApplication CRD · 4 executors<br>
+        <small>User/item features: interaction counts, avg ratings, category preferences</small>
+      </div>
+    </div>
+    <div class="arch-box" style="border-color:#f97316;">
+      <div class="arch-title">Spark + RAPIDS</div>
+      <div class="arch-detail">
+        Same PySpark code, GPU-accelerated<br>
+        <small>SentenceTransformer embeddings (384d) · 1M reviews → Milvus vectors</small>
+      </div>
+    </div>
+  </div>
+  <div class="arch-arrow">▼</div>
+
+  <!-- Layer 3: Feast -->
+  <div class="arch-section-label">3 · Feature Store</div>
+  <div class="arch-row">
+    <div class="arch-box" style="border-color:#059669;">
+      <div class="arch-title">Feast</div>
+      <div class="arch-detail" style="display:grid;grid-template-columns:1fr 1fr;gap:12px;text-align:left;">
+        <div>
+          <strong style="color:var(--text-primary);">Tabular features → Redis</strong><br>
+          <small>user_features (1.6M users) · item_features (1.6M items)<br>
+          <code style="font-size:10px;">feast materialize</code> from offline Parquet → online &lt;1ms lookups</small>
+        </div>
+        <div>
+          <strong style="color:var(--text-primary);">Vector features → Milvus</strong><br>
+          <small>review_embeddings (994K vectors, 384d)<br>
+          <code style="font-size:10px;">retrieve_online_documents_v2</code> · cosine similarity search</small>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="arch-arrow">▼</div>
+
+  <!-- Layer 4: Training -->
+  <div class="arch-section-label">4 · Distributed Training (Kubeflow)</div>
+  <div class="arch-row" style="grid-template-columns:1fr 1fr;">
+    <div class="arch-box" style="border-color:#2563eb;">
+      <div class="arch-title">Recommendation Model</div>
+      <div class="arch-detail">
+        Two-Tower Neural Collaborative Filtering<br>
+        <small>PyTorch DDP · Kubeflow TrainJob · multi-node<br>
+        User MLP + Item MLP → dot product scoring<br>
+        1.6M items × 64d embeddings · trained on interaction pairs</small>
+      </div>
+    </div>
+    <div class="arch-box" style="border-color:#7c3aed;">
+      <div class="arch-title">LLM Fine-Tuning</div>
+      <div class="arch-detail">
+        Mistral-7B-Instruct · QLoRA + FSDP<br>
+        <small>Kubeflow TrainJob · LoRA rank 16 · 4-bit quantized base<br>
+        Instruction-tuned on review summarization task<br>
+        Adapter merged at serving time (hot-loadable)</small>
+      </div>
+    </div>
+  </div>
+  <div class="arch-arrow">▼</div>
+
+  <!-- Layer 5: Serving -->
+  <div class="arch-section-label">5 · Model Serving (KServe)</div>
+  <div class="arch-row" style="grid-template-columns:1fr 1fr 1fr;">
+    <div class="arch-box" style="border-color:#2563eb;">
+      <div class="arch-title">smartshop-rec</div>
+      <div class="arch-detail">
+        <small>PyTorch · RawDeployment<br>
+        Pre-computed item embeddings<br>
+        Full-catalog scoring per request<br>
+        <code style="font-size:10px;">/v1/models/smartshop-rec:predict</code></small>
+      </div>
+    </div>
+    <div class="arch-box" style="border-color:#7c3aed;">
+      <div class="arch-title">smartshop-llm</div>
+      <div class="arch-detail">
+        <small>vLLM · continuous batching<br>
+        PagedAttention · LoRA adapter<br>
+        ~20 tok/s generation<br>
+        <code style="font-size:10px;">/v1/completions</code></small>
+      </div>
+    </div>
+    <div class="arch-box" style="border-color:#059669;">
+      <div class="arch-title">smartshop-rag</div>
+      <div class="arch-detail">
+        <small>FastAPI · Feast + Milvus<br>
+        SentenceTransformer embed → search<br>
+        LLM-grounded answer generation<br>
+        <code style="font-size:10px;">/v1/ask</code></small>
+      </div>
+    </div>
+  </div>
+  <div class="arch-arrow">▼</div>
+
+  <!-- Layer 6: Observability -->
+  <div class="arch-section-label">6 · Observability</div>
+  <div class="arch-row" style="grid-template-columns:repeat(4,1fr);">
+    <div class="arch-box-sm">
+      <div class="arch-title-sm">Prometheus</div>
+      <small>ServiceMonitor scraping<br>all 3 inference services</small>
+    </div>
+    <div class="arch-box-sm">
+      <div class="arch-title-sm">Grafana</div>
+      <small>4 dashboards: Inference,<br>Redis, Spark, GPU</small>
+    </div>
+    <div class="arch-box-sm">
+      <div class="arch-title-sm">MLflow</div>
+      <small>Training loss curves,<br>model registry</small>
+    </div>
+    <div class="arch-box-sm">
+      <div class="arch-title-sm">Redis Exporter</div>
+      <small>ops/sec, hit ratio,<br>memory, keys</small>
+    </div>
+  </div>
+  <div class="arch-arrow">▼</div>
+
+  <!-- Layer 7: UI -->
   <div class="arch-row">
     <div class="arch-box" style="border-color:var(--accent);background:var(--accent-bg);">
-      <div class="arch-title">This Demo UI</div>
-      <div class="arch-detail">Gradio · Live metrics · Grafana integration</div>
+      <div class="arch-title">SmartShop Demo UI</div>
+      <div class="arch-detail">
+        Gradio · OpenShift Route · live pipeline traces · embedded Grafana dashboards
+      </div>
     </div>
   </div>
 </div>
-<div style="margin-top:24px;">
+
+<!-- Platform summary table -->
+<div style="margin-top:28px;max-width:960px;margin-left:auto;margin-right:auto;">
+  <div style="color:var(--text-secondary);font-size:12px;font-weight:600;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">Platform Stack</div>
   <table style="width:100%;border-collapse:collapse;font-size:13px;">
-    <thead><tr style="border-bottom:1px solid var(--border);">
+    <thead><tr style="border-bottom:2px solid var(--border);">
       <th style="padding:8px;text-align:left;color:var(--text-secondary);">Layer</th>
-      <th style="padding:8px;text-align:left;color:var(--text-secondary);">Tool</th>
-      <th style="padding:8px;text-align:left;color:var(--text-secondary);">Metrics</th>
+      <th style="padding:8px;text-align:left;color:var(--text-secondary);">Technology</th>
+      <th style="padding:8px;text-align:left;color:var(--text-secondary);">Role</th>
     </tr></thead>
-    <tbody>
-      <tr><td style="padding:6px 8px;">Accelerators</td><td>DCGM → Prometheus</td><td>Utilization, memory, throughput</td></tr>
-      <tr><td style="padding:6px 8px;">Spark</td><td>PrometheusServlet</td><td>Heap, GC, shuffle, BlockManager</td></tr>
-      <tr><td style="padding:6px 8px;">Feature Store</td><td>redis_exporter</td><td>ops/sec, hit ratio, keys</td></tr>
-      <tr><td style="padding:6px 8px;">Training</td><td>MLflow (RHOAI)</td><td>Loss curves, throughput, speedup</td></tr>
-      <tr><td style="padding:6px 8px;">Inference</td><td>prometheus_client</td><td>Request rate, latency, tokens/s</td></tr>
-      <tr><td style="padding:6px 8px;">Dashboards</td><td>Grafana</td><td>Redis / Inference panels</td></tr>
+    <tbody style="color:var(--text-primary);">
+      <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 8px;">Platform</td><td>Red Hat OpenShift AI</td><td>Kubernetes + ML platform layer</td></tr>
+      <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 8px;">Data Processing</td><td>Spark on K8s + RAPIDS</td><td>Feature engineering, embedding generation</td></tr>
+      <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 8px;">Feature Store</td><td>Feast (Redis + Milvus)</td><td>Online features &lt;1ms · vector retrieval</td></tr>
+      <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 8px;">Training</td><td>Kubeflow TrainJob</td><td>Distributed PyTorch DDP + QLoRA FSDP</td></tr>
+      <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 8px;">Serving</td><td>KServe (RawDeployment)</td><td>3 InferenceServices + auto-scaling</td></tr>
+      <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 8px;">LLM Runtime</td><td>vLLM</td><td>Continuous batching, PagedAttention, LoRA</td></tr>
+      <tr><td style="padding:6px 8px;">Observability</td><td>Prometheus + Grafana</td><td>End-to-end metrics across all layers</td></tr>
     </tbody>
   </table>
 </div>
@@ -563,50 +720,8 @@ ARCH_HTML = """
 # ── CSS ───────────────────────────────────────────────────────────────────────
 
 CSS = """
-/* Theme variables */
+/* Theme variables — light by default */
 :root {
-    --bg-primary: #0f172a;
-    --bg-card: #1e293b;
-    --border: #334155;
-    --text-primary: #e2e8f0;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
-    --accent: #38bdf8;
-    --accent-bg: #1e3a5f;
-    --accent-text: #93c5fd;
-    --green-bg: #064e3b;
-    --green-border: #059669;
-    --green-text: #6ee7b7;
-    --yellow-bg: #78350f;
-    --yellow-text: #fbbf24;
-    --red-bg: #7f1d1d;
-    --red-text: #fca5a5;
-    --logo-filter: brightness(0) invert(1);
-    --header-border: #1e293b;
-}
-@media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) {
-        --bg-primary: #f8fafc;
-        --bg-card: #ffffff;
-        --border: #e2e8f0;
-        --text-primary: #1e293b;
-        --text-secondary: #475569;
-        --text-muted: #64748b;
-        --accent: #2563eb;
-        --accent-bg: #eff6ff;
-        --accent-text: #1d4ed8;
-        --green-bg: #ecfdf5;
-        --green-border: #059669;
-        --green-text: #065f46;
-        --yellow-bg: #fefce8;
-        --yellow-text: #92400e;
-        --red-bg: #fef2f2;
-        --red-text: #991b1b;
-        --logo-filter: none;
-        --header-border: #e2e8f0;
-    }
-}
-:root[data-theme="light"] {
     --bg-primary: #f8fafc;
     --bg-card: #ffffff;
     --border: #e2e8f0;
@@ -625,6 +740,26 @@ CSS = """
     --red-text: #991b1b;
     --logo-filter: none;
     --header-border: #e2e8f0;
+}
+:root[data-theme="dark"] {
+    --bg-primary: #0f172a;
+    --bg-card: #1e293b;
+    --border: #334155;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --accent: #38bdf8;
+    --accent-bg: #1e3a5f;
+    --accent-text: #93c5fd;
+    --green-bg: #064e3b;
+    --green-border: #059669;
+    --green-text: #6ee7b7;
+    --yellow-bg: #78350f;
+    --yellow-text: #fbbf24;
+    --red-bg: #7f1d1d;
+    --red-text: #fca5a5;
+    --logo-filter: brightness(0) invert(1);
+    --header-border: #1e293b;
 }
 
 /* Status strip */
@@ -662,16 +797,19 @@ CSS = """
 /* Architecture */
 .arch-row { display:grid; grid-template-columns:1fr; gap:12px; margin:8px 0; }
 .arch-box { background:var(--bg-card); border:2px solid var(--border); border-radius:10px; padding:16px; text-align:center; }
+.arch-box-sm { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:10px; text-align:center; color:var(--text-secondary); }
 .arch-title { font-weight:700; color:var(--text-primary); font-size:14px; margin-bottom:6px; }
+.arch-title-sm { font-weight:600; color:var(--text-primary); font-size:12px; margin-bottom:4px; }
 .arch-detail { color:var(--text-secondary); font-size:12px; line-height:1.5; }
 .arch-arrow { text-align:center; color:var(--text-muted); font-size:16px; margin:4px 0; }
+.arch-section-label { color:var(--text-muted); font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; margin:16px 0 4px; }
 
 /* Global */
 footer { display:none !important; }
 .gradio-container { max-width: 1200px !important; margin: 0 auto !important; }
 
-/* Gradio light mode overrides */
-:root[data-theme="light"] {
+/* Gradio light mode overrides (default) */
+:root:not([data-theme="dark"]) {
     --body-background-fill: #f8fafc !important;
     --block-background-fill: #ffffff !important;
     --block-border-color: #e2e8f0 !important;
@@ -730,11 +868,12 @@ THEME_JS = """
     if (btn) btn.textContent = '🌙';
   }
   function toggleTheme() {
-    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
-    if (isLight) { setDark(); } else { setLight(); }
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    if (isDark) { setLight(); } else { setDark(); }
   }
   window.toggleTheme = toggleTheme;
-  // Attach click handler once DOM is ready
+  // Default to light on load
+  setLight();
   setTimeout(() => {
     const btn = document.getElementById('theme-toggle');
     if (btn) btn.addEventListener('click', toggleTheme);
@@ -753,7 +892,7 @@ with gr.Blocks(title="SmartShop AI — Production ML at Scale", theme=THEME, css
              onerror="this.outerHTML='<div style=\\'background:#ee0000;color:white;font-weight:700;padding:6px 12px;border-radius:6px;font-size:13px;\\'>Red Hat</div>'"/>
         <span style="color:var(--text-primary);font-size:18px;font-weight:600;">SmartShop AI</span>
         <div style="flex:1;"></div>
-        <button id="theme-toggle" style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:16px;line-height:1;" title="Toggle light/dark mode">🌙</button>
+        <button id="theme-toggle" style="background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:5px 10px;cursor:pointer;font-size:16px;line-height:1;" title="Toggle light/dark mode">☀️</button>
       </div>
       <div style="color:var(--text-muted);font-size:13px;margin-top:6px;">
         Hyper-Personalized Customer Intelligence — Powered by Kubeflow, Feast, KServe &amp; Spark on <strong style="color:#ee0000;">Red Hat OpenShift AI</strong>
@@ -848,22 +987,22 @@ with gr.Blocks(title="SmartShop AI — Production ML at Scale", theme=THEME, css
 
             qa_btn.click(ask_question, inputs=[question_input, product_id_input], outputs=[rag_output, status_strip])
 
-        # ── Tab 4: Platform Metrics ───────────────────────────────────────
-        with gr.Tab("Platform Metrics"):
+        # ── Tab 4: Observability ──────────────────────────────────────────
+        with gr.Tab("Observability"):
             gr.HTML(
                 '<div style="color:var(--text-secondary);font-size:13px;margin:8px 0;line-height:1.6;">'
-                '<strong style="color:var(--text-primary);">Observability across the full ML lifecycle</strong> — '
-                'Prometheus, Redis Exporter, and Grafana dashboards tracking this live session'
+                '<strong style="color:var(--text-primary);">Live observability across the full ML lifecycle</strong> — '
+                'Prometheus scraping all inference services · Grafana dashboards · auto-refreshing every 10s'
                 '</div>'
             )
-
-            gr.Markdown("### Demo Session Stats")
-            session_stats_html = gr.HTML(build_session_stats_html())
 
             gr.Markdown("### Service Health")
             health_html = gr.HTML(build_service_health_html())
 
-            gr.Markdown("### Live Dashboards")
+            gr.Markdown("### Demo Session Stats")
+            session_stats_html = gr.HTML(build_session_stats_html())
+
+            gr.Markdown("### Grafana Dashboards")
             grafana_html = gr.HTML(build_grafana_html())
 
             refresh_btn = gr.Button("Refresh Metrics", variant="secondary", size="sm")
@@ -877,7 +1016,8 @@ with gr.Blocks(title="SmartShop AI — Production ML at Scale", theme=THEME, css
             gr.HTML(
                 '<div style="color:var(--text-secondary);font-size:13px;margin:8px 0;line-height:1.6;">'
                 '<strong style="color:var(--text-primary);">End-to-end production ML</strong> — from 233M Amazon reviews '
-                'through Spark preprocessing, Feast feature management, distributed training, to real-time serving'
+                'through Spark preprocessing, Feast feature management, distributed training, to real-time serving on '
+                '<strong style="color:var(--text-primary);">Red Hat OpenShift AI</strong>'
                 '</div>'
             )
             gr.HTML(ARCH_HTML)

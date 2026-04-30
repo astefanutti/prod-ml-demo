@@ -33,7 +33,7 @@ spec:
   # the live Parquet files in MinIO.
   feastProjectDir:
     git:
-      url: https://github.com/abhijeet-dhumal/prod-ml-demo.git
+      url: ${GIT_REPO}
       ref: ${GIT_BRANCH}
       featureRepoPath: feast/feature_repo
 
@@ -85,7 +85,7 @@ spec:
                 resources:
                   requests:
                     storage: 1Gi
-                storageClassName: nfs-csi
+                storageClassName: ${STORAGE_CLASS:-nfs-csi}
               mountPath: /feast-registry
         server:
           image: ${FEAST_SERVER_IMAGE}

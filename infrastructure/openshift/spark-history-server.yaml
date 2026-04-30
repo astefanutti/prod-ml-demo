@@ -39,7 +39,7 @@ spec:
       containers:
         - name: spark-history-server
           # Same Spark version as ETL jobs — ensures DAG/metrics compatibility
-          image: docker.io/apache/spark:3.5.3
+          image: ${SPARK_HISTORY_IMAGE:-docker.io/apache/spark:3.5.3}
           command:
             - /bin/bash
             - -c
@@ -50,14 +50,14 @@ spec:
               mkdir -p /tmp/spark-extra-jars /tmp/spark-conf
               echo "Downloading hadoop-aws JARs..."
               curl -fsSL -o /tmp/spark-extra-jars/hadoop-aws-3.3.4.jar \
-                "${MINIO_URL}/smartshop-raw/jars/hadoop-aws-3.3.4.jar"
+                "${MINIO_URL}/${S3_RAW_BUCKET}/jars/hadoop-aws-3.3.4.jar"
               curl -fsSL -o /tmp/spark-extra-jars/aws-java-sdk-bundle-1.12.262.jar \
-                "${MINIO_URL}/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
+                "${MINIO_URL}/${S3_RAW_BUCKET}/jars/aws-java-sdk-bundle-1.12.262.jar"
               echo "JARs ready: $(ls -sh /tmp/spark-extra-jars/*.jar | tr '\n' ' ')"
 
               # Write conf with no leading whitespace (heredoc indentation stripped via printf)
               printf '%s\n' \
-                "spark.history.fs.logDirectory s3a://smartshop-spark-logs/events" \
+                "spark.history.fs.logDirectory s3a://${S3_SPARK_LOGS_BUCKET}/events" \
                 "spark.history.fs.update.interval 10s" \
                 "spark.history.ui.port 18080" \
                 "spark.history.retainedApplications 100" \

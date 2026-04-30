@@ -23,7 +23,7 @@
 | RedisInsight | `https://redisinsight-smartshop.${OC_CLUSTER_DOMAIN}` |
 | Attu (Milvus UI) | `https://attu-smartshop.${OC_CLUSTER_DOMAIN}` |
 | Grafana Inference Metrics | `https://grafana-smartshop.${OC_CLUSTER_DOMAIN}/d/smartshop-inference` |
-| Gradio Demo UI | *(local: `make demo`, or deploy as Route)* |
+| Gradio Demo UI | `https://smartshop-demo-ui-smartshop.${OC_CLUSTER_DOMAIN}` |
 
 ---
 

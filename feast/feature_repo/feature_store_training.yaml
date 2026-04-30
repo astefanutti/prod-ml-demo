@@ -13,7 +13,7 @@ provider: local
 registry:
   registry_type: remote
   # RHOAI Feast Operator exposes registry on port 443 (OpenShift service CA TLS, targetPort 6571)
-  path: feast-smartshop-feast-registry.smartshop.svc.cluster.local:443
+  path: feast-smartshop-feast-registry.${NAMESPACE}.svc.cluster.local:443
   cert: /var/run/secrets/service-ca/service-ca.crt
 
 offline_store:
@@ -33,7 +33,7 @@ offline_store:
     spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
     # UBI9 FIPS blocks AWS SDK HMAC signing without this
     spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
-    spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
     spark.hadoop.fs.s3a.path.style.access: "true"
     spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
     spark.hadoop.fs.s3a.aws.credentials.provider: "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"

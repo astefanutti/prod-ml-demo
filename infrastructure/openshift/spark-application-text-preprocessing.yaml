@@ -45,13 +45,13 @@ spec:
   sparkConf:
     spark.sql.adaptive.enabled: "true"
     spark.sql.shuffle.partitions: "400"
-    spark.jars: "http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/hadoop-aws-3.3.4.jar,http://minio.${NAMESPACE}.svc.cluster.local:9000/smartshop-raw/jars/aws-java-sdk-bundle-1.12.262.jar"
+    spark.jars: "http://minio.${NAMESPACE}.svc.cluster.local:9000/${S3_RAW_BUCKET}/jars/hadoop-aws-3.3.4.jar,http://minio.${NAMESPACE}.svc.cluster.local:9000/${S3_RAW_BUCKET}/jars/aws-java-sdk-bundle-1.12.262.jar"
     spark.ui.prometheus.enabled: "true"
     spark.executor.processTreeMetrics.enabled: "true"
     spark.metrics.conf: "/etc/spark-metrics/metrics.properties"
     # Spark History Server — event logs written to MinIO s3a://
     spark.eventLog.enabled: "true"
-    spark.eventLog.dir: "s3a://smartshop-spark-logs/events"
+    spark.eventLog.dir: "s3a://${S3_SPARK_LOGS_BUCKET}/events"
     spark.eventLog.compress: "true"
     # Large shuffle for dedup (dropDuplicates across 109M rows)
     spark.sql.shuffle.partitions: "600"

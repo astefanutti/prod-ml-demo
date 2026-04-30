@@ -26,9 +26,9 @@ set -a && source .env && set +a
 # Phase 1: Namespace, secrets, RBAC, monitoring
 bash scripts/apply-all.sh infra
 
-# Phase 2: ImageStreams + BuildConfigs → wait for all 6 builds to Complete
+# Phase 2: ImageStreams + BuildConfigs → wait for all 11 builds to Complete
 bash scripts/apply-all.sh images
-oc get builds -n smartshop -w
+oc get builds -n ${NAMESPACE} -w
 
 # Phase 3: Upload Spark JARs + download full dataset to MinIO
 bash scripts/apply-all.sh data
@@ -38,23 +38,28 @@ bash scripts/apply-all.sh observability
 
 # Phase 5: Spark ETL (RAPIDS, CPU baseline, text preprocessing)
 bash scripts/apply-all.sh spark
-oc get sparkapplication -n smartshop -w
+oc get sparkapplication -n ${NAMESPACE} -w
 
 # Phase 6: Feast operator → feast apply → materialize
 bash scripts/apply-all.sh feast
 bash scripts/wait-and-materialize.sh
 
-# Phase 7: Training (Notebook CR runs rec + LLM training notebooks)
+# Phase 7: Training (Notebook CR runs rec → llm → serving via Papermill)
 bash scripts/apply-all.sh training
-# OR direct TrainJob submission:
-envsubst < infrastructure/openshift/trainjobs.yaml | oc apply -f -
-oc get trainjob -n smartshop -w
+# Watch progress:
+oc logs -n ${NAMESPACE} notebook/smartshop-e2e-test -c e2e-runner -f
 
 # Phase 8: Serving (ServingRuntimes + InferenceServices + ServiceMonitor)
 bash scripts/apply-all.sh serving
-oc get inferenceservice -n smartshop -w
+oc get inferenceservice -n ${NAMESPACE} -w
 
-# Phase 9: Notebook runner (optional — metrics analysis)
+# Phase 9: Embedding pipeline (SparkApplication + Feast materialization job)
+bash scripts/apply-all.sh embeddings
+
+# Phase 10: Deploy Gradio demo UI
+bash scripts/apply-all.sh demo-ui
+
+# Phase 11: Notebook runner (optional — metrics analysis)
 bash scripts/apply-all.sh notebook
 ```
 
@@ -70,9 +75,10 @@ All manifests live in `infrastructure/openshift/`. Key files by phase:
 | Observability | `grafana.yaml`, `redis-exporter.yaml`, `spark-metrics-configmap.yaml` |
 | Spark | `spark-history-server.yaml`, `spark-application-rapids.yaml`, `spark-application-cpu-baseline.yaml`, `spark-application-text-preprocessing.yaml`, `spark-application-embedding.yaml` |
 | Feast | `feast-spark-engine.yaml`, `feast-operator.yaml`, `feast-training-configmap.yaml`, `feast-spark-driver-svc.yaml` |
-| Training | `trainjobs.yaml`, `notebook-rec-train.yaml`, `notebook-llm-train.yaml`, `e2e-notebook.yaml` |
+| Training | `trainjobs.yaml` *(TrainingRuntimes)*, `e2e-notebook.yaml` *(Notebook CR — Papermill runner)* |
 | Serving | `serving-runtimes.yaml` *(consolidated — Secret, SA, 2 ServingRuntimes, 3 InferenceServices, ServiceMonitor)* |
-| Monitoring | `serving-metrics-monitor.yaml` *(also included in serving-runtimes.yaml)* |
+| Embeddings | `spark-application-embedding.yaml`, `feast-materialize-embeddings-job.yaml` |
+| Demo UI | `demo-ui.yaml` *(Deployment + Service + Route)* |
 
 ### Secrets (all created by `apply-all.sh infra` or `make setup-secrets`)
 

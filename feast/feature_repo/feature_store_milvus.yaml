@@ -23,7 +23,7 @@ provider: local
 
 registry:
   registry_type: remote
-  path: feast-smartshop-feast-registry.smartshop.svc.cluster.local:443
+  path: feast-smartshop-feast-registry.${NAMESPACE}.svc.cluster.local:443
   cert: /var/run/secrets/feast-registry-tls/tls.crt
 
 # offline_store: feast apply validates SparkSource schemas by starting a local Spark session.
@@ -39,7 +39,7 @@ offline_store:
     spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
     spark.sql.execution.arrow.pyspark.enabled: "true"
     spark.sql.execution.arrow.fallback.enabled: "true"
-    spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
     spark.hadoop.fs.s3a.path.style.access: "true"
     spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
     spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
@@ -110,7 +110,7 @@ batch_engine:
   spark.sql.execution.arrow.fallback.enabled: "true"
   spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
   # S3 / MinIO
-  spark.hadoop.fs.s3a.endpoint: "http://minio.smartshop.svc.cluster.local:9000"
+  spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
   spark.hadoop.fs.s3a.path.style.access: "true"
   spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
   spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
@@ -123,7 +123,7 @@ batch_engine:
 
 online_store:
   type: milvus
-  host: "http://milvus.smartshop.svc.cluster.local"
+  host: "http://milvus.${NAMESPACE}.svc.cluster.local"
   port: 19530
   vector_enabled: true
   embedding_dim: 384
