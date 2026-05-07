@@ -1,0 +1,107 @@
+---
+# BuildConfig — feast-spark-server
+# Feast pod image: JDK 11 + PySpark 3.5.3 + Feast fork (with offline path patch) + RAPIDS driver JAR.
+# Trigger: oc start-build feast-spark-server -n ${NAMESPACE} --follow
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: feast-spark-server
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+    contextDir: "."
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.feast-spark
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-feast-spark-server:${IMAGE_TAG}
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "8Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — feast-spark-executor (CPU baseline)
+# k8s:// executor pods — must match driver Feast/PySpark version.
+# Trigger: oc start-build feast-spark-executor -n ${NAMESPACE} --follow
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: feast-spark-executor
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+    contextDir: "."
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.feast-spark-executor
+      noCache: false
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-feast-spark-executor:${IMAGE_TAG}
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "12Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2
+
+---
+# BuildConfig — feast-spark-executor-rapids (GPU)
+# Extends feast-spark-executor with RAPIDS JAR + GPU discovery.
+# Must build AFTER feast-spark-executor is pushed.
+# Trigger: oc start-build feast-spark-executor-rapids -n ${NAMESPACE} --follow
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: feast-spark-executor-rapids
+  namespace: ${NAMESPACE}
+spec:
+  source:
+    type: Git
+    git:
+      uri: ${GIT_REPO}
+      ref: ${GIT_BRANCH}
+    contextDir: "."
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: build/Containerfile.feast-spark-executor-rapids
+      noCache: false
+      buildArgs:
+        - name: REGISTRY
+          value: ${REGISTRY}
+        - name: IMAGE_TAG
+          value: ${IMAGE_TAG}
+  output:
+    to:
+      kind: DockerImage
+      name: ${REGISTRY}/smartshop-feast-spark-executor-rapids:${IMAGE_TAG}
+    pushSecret:
+      name: ${QUAY_PUSH_SECRET}
+  resources:
+    limits:
+      cpu: "4"
+      memory: "12Gi"
+  successfulBuildsHistoryLimit: 2
+  failedBuildsHistoryLimit: 2

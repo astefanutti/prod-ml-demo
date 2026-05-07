@@ -1,0 +1,24 @@
+# Stable ClusterIP Service for the Feast offline-store Spark driver.
+# Required for k8s:// mode so executors can reach back to the driver
+# on fixed ports (7078 driver, 7079 block-manager).
+apiVersion: v1
+kind: Service
+metadata:
+  name: feast-spark-driver
+  namespace: ${NAMESPACE:-smartshop}
+  labels:
+    app.kubernetes.io/component: spark-driver
+    feast.dev/name: smartshop-feast
+spec:
+  type: ClusterIP
+  selector:
+    feast.dev/name: smartshop-feast
+  ports:
+    - name: spark-driver
+      port: 7078
+      protocol: TCP
+      targetPort: 7078
+    - name: spark-blockmanager
+      port: 7079
+      protocol: TCP
+      targetPort: 7079

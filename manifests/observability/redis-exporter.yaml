@@ -1,0 +1,122 @@
+---
+# Redis Prometheus Exporter — scrapes Redis INFO and exposes metrics for Prometheus.
+#
+# WHY: RedisInsight provides a GUI but no Prometheus-queryable time-series.
+# This exporter gives us:
+#   redis_commands_processed_total        — Feast feature retrieval throughput (HGET/GET ops)
+#   redis_keyspace_hits_total/misses      — Cache hit ratio for online feature reads
+#   redis_memory_used_bytes               — Memory pressure from materialized features
+#   redis_instantaneous_ops_per_sec       — Real-time operation rate during model serving
+#   redis_connected_clients               — Number of concurrent feature consumers
+#   redis_command_duration_seconds_*      — Per-command latency (p50/p95/p99)
+#   redis_db_keys                         — Total keys = number of materialized features
+#
+# FEAST ONLINE STORE INSIGHT:
+#   During `feast materialize`, watch redis_keyspace_hits_total climb as features land.
+#   During inference (KServe / Gradio), watch redis_instantaneous_ops_per_sec spike.
+#   Hit ratio = hits / (hits + misses) — target > 95% for a warm feature store.
+#
+# APPLY:
+#   oc apply -f ../../infrastructure/openshift/user-workload-monitoring.yaml  # enable first
+#   /bin/bash -c 'set -a; source .env; set +a; envsubst < manifests/observability/redis-exporter.yaml | oc apply -f -'
+#
+# VERIFY:
+#   oc get pod -n smartshop -l app=redis-exporter
+#   oc port-forward -n smartshop svc/redis-exporter 9121:9121
+#   curl http://localhost:9121/metrics | grep redis_
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: ${NAMESPACE}
+  labels:
+    app: redis-exporter
+    component: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-exporter
+  template:
+    metadata:
+      labels:
+        app: redis-exporter
+        component: observability
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: redis-exporter
+          image: ${REDIS_EXPORTER_IMAGE}
+          ports:
+            - containerPort: 9121
+              name: metrics
+          env:
+            - name: REDIS_ADDR
+              value: "redis://redis.${NAMESPACE}.svc.cluster.local:6379"
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: smartshop-credentials
+                  key: REDIS_PASSWORD
+            # Enable per-command latency histograms (requires Redis 7+ or LATENCY HISTORY)
+            - name: REDIS_EXPORTER_DEBUG
+              value: "false"
+            - name: REDIS_EXPORTER_LOG_FORMAT
+              value: "txt"
+            # Collect per-command call count + duration
+            - name: REDIS_EXPORTER_INCL_SYSTEM_METRICS
+              value: "true"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9121
+            initialDelaySeconds: 15
+            periodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+  namespace: ${NAMESPACE}
+  labels:
+    app: redis-exporter
+    component: observability
+spec:
+  selector:
+    app: redis-exporter
+  ports:
+    - name: metrics
+      port: 9121
+      targetPort: 9121
+
+---
+# ServiceMonitor — tells the user-workload Prometheus to scrape redis-exporter.
+# Requires user-workload monitoring enabled (user-workload-monitoring.yaml).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-exporter
+  namespace: ${NAMESPACE}
+  labels:
+    app: redis-exporter
+    # This label is required for user-workload Prometheus to pick up the ServiceMonitor
+    prometheus: user-workload
+spec:
+  selector:
+    matchLabels:
+      app: redis-exporter
+  endpoints:
+    - port: metrics
+      interval: 15s
+      path: /metrics

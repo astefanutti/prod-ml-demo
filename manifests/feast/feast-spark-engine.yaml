@@ -1,0 +1,114 @@
+---
+# feast-spark-engine ConfigMap (k8s:// + RAPIDS)
+# Referenced by spec.batchEngine.configMapRef in the FeatureStore CR.
+# The operator injects this as batch_engine: {...} into feature_store.yaml.
+#
+# Feast pod acts as Spark driver, spawns RAPIDS GPU executor pods.
+# feast-spark-driver Service (7078/7079) provides executor → driver callback.
+#
+# Memory tuning: 6g JVM heap + 14g overhead = 20Gi per executor.
+# partitions: 200 keeps per-partition memory low (Feast's list(rows) in _write_partition).
+#
+# Apply:
+#   envsubst < manifests/feast/feast-spark-engine.yaml | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feast-spark-engine
+  namespace: ${NAMESPACE}
+data:
+  config: |
+    type: spark.engine
+    partitions: 200
+    spark_conf:
+      spark.master: "k8s://https://kubernetes.default.svc:443"
+      spark.submit.deployMode: "client"
+      spark.driver.host: "feast-spark-driver.${NAMESPACE}.svc.cluster.local"
+      spark.driver.bindAddress: "0.0.0.0"
+      spark.driver.port: "7078"
+      spark.blockManager.port: "7079"
+      spark.driver.memory: "8g"
+      spark.driver.maxResultSize: "4g"
+      spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
+      spark.executor.instances: "2"
+      spark.executor.cores: "4"
+      spark.kubernetes.executor.request.cores: "3"
+      spark.executor.memory: "6g"
+      spark.executor.memoryOverhead: "14g"
+      spark.executor.extraJavaOptions: "-Duser.dir=/tmp -XX:+UseG1GC -XX:MaxDirectMemorySize=1g"
+      spark.kubernetes.container.image: "${FEAST_SPARK_EXECUTOR_RAPIDS_IMAGE}"
+      spark.kubernetes.container.image.pullPolicy: "Always"
+      spark.kubernetes.namespace: "${NAMESPACE}"
+      spark.kubernetes.authenticate.driver.serviceAccountName: "feast-smartshop-feast"
+      spark.kubernetes.executor.deleteOnTermination: "true"
+      spark.kubernetes.executor.label.feast-job: "materialize"
+      spark.kubernetes.executor.limit.nvidia.com/gpu: "1"
+      spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID: "feast-s3-credentials:AWS_ACCESS_KEY_ID"
+      spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY: "feast-s3-credentials:AWS_SECRET_ACCESS_KEY"
+      spark.rapids.sql.enabled: "true"
+      spark.plugins: "com.nvidia.spark.SQLPlugin"
+      spark.rapids.sql.concurrentGpuTasks: "2"
+      spark.rapids.memory.pinnedPool.size: "1g"
+      spark.rapids.sql.explain: "NOT_ON_GPU"
+      spark.task.resource.gpu.amount: "0.25"
+      spark.executor.resource.gpu.amount: "1"
+      spark.executor.resource.gpu.vendor: "nvidia.com"
+      spark.executor.resource.gpu.discoveryScript: "/opt/spark/getGpusResources.sh"
+      spark.sql.runSQLOnFiles: "true"
+      spark.ui.enabled: "false"
+      spark.eventLog.enabled: "false"
+      spark.sql.session.timeZone: "UTC"
+      spark.sql.shuffle.partitions: "200"
+      spark.default.parallelism: "200"
+      spark.sql.execution.arrow.pyspark.enabled: "true"
+      spark.sql.execution.arrow.fallback.enabled: "true"
+      spark.sql.execution.arrow.maxRecordsPerBatch: "10000"
+      spark.executor.maxNumFailures: "16"
+      spark.task.maxFailures: "8"
+      spark.network.timeout: "600s"
+      spark.executor.heartbeatInterval: "60s"
+      spark.kubernetes.executor.missingPodDetectDelta: "120s"
+      spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+      spark.hadoop.fs.s3a.path.style.access: "true"
+      spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+      spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+      spark.hadoop.fs.s3a.connection.maximum: "100"
+      spark.hadoop.fs.s3a.threads.max: "64"
+
+---
+# feast-spark-config Secret
+# Referenced by spec.services.offlineStore.persistence.store.secretRef.
+# Key name must match the offline store type: "spark".
+# IMPORTANT: spark.sql.runSQLOnFiles MUST be here — feast apply creates a
+# SparkSession from offline_store config, and getOrCreate() may reuse it for
+# materialize. Without runSQLOnFiles, parquet.`s3a://...` queries fail.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: feast-spark-config
+  namespace: ${NAMESPACE}
+stringData:
+  spark: |
+    spark_conf:
+      spark.master: "local[*]"
+      spark.ui.enabled: "false"
+      spark.eventLog.enabled: "false"
+      spark.sql.session.timeZone: "UTC"
+      spark.sql.runSQLOnFiles: "true"
+      spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
+      spark.sql.execution.arrow.pyspark.enabled: "true"
+      spark.sql.execution.arrow.fallback.enabled: "true"
+      spark.sql.shuffle.partitions: "200"
+      spark.default.parallelism: "200"
+      spark.driver.memory: "8g"
+      spark.executor.memory: "8g"
+      spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+      spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+      spark.hadoop.fs.s3a.path.style.access: "true"
+      spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+      spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+      spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+      spark.hadoop.fs.s3a.connection.maximum: "100"
+      spark.hadoop.fs.s3a.threads.max: "64"
+    staging_location: "s3://${S3_FEATURES_BUCKET}/feast-staging/"

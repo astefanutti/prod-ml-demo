@@ -1,0 +1,146 @@
+# SmartShop feature_store.yaml
+#
+# This file is used in two contexts:
+#
+#   1. feast-spark-server pod (materialization):
+#        - offline_store.type: spark  →  SparkComputeEngine reads SparkSource → Redis
+#        - registry: file on PVC (/feast-registry/registry.db)
+#        - Set by: FeatureStore CR batchEngine ConfigMap + offlineStore secret
+#
+#   2. rec-trainer pod (training - get_historical_features):
+#        - offline_store.type: spark  →  SparkSession local[*] in training pod
+#        - registry: remote gRPC → feast-smartshop-feast-registry svc
+#        - Set by: FEAST_REGISTRY_TYPE=remote + FEAST_REGISTRY_PATH env vars
+#
+# Env vars used: AWS_ENDPOINT_URL_S3, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+#                REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
+#                FEAST_REGISTRY_TYPE (file|remote), FEAST_REGISTRY_PATH
+#
+# For local dev: export the above from .env, then: feast apply / feast materialize-incremental
+
+project: smartshop
+provider: local
+
+# Registry: Feast's YAML loader uses os.path.expandvars() which supports ${VAR} but NOT
+# ${VAR:-default} (bash-style defaults). The pod version uses static values; this repo
+# version documents the intended env vars but requires them to be set before use.
+registry:
+  registry_type: file
+  path: /feast-registry/registry.db
+
+offline_store:
+  type: spark
+  spark_conf:
+    spark.master: "local[*]"
+    spark.ui.enabled: "false"
+    spark.eventLog.enabled: "false"
+    spark.sql.catalogImplementation: "hive"
+    spark.sql.session.timeZone: "UTC"
+    spark.sql.execution.arrow.pyspark.enabled: "true"
+    spark.sql.execution.arrow.fallback.enabled: "true"
+    # 200 partitions for 4M users / 1.8M items — avoids OOM on large shuffles
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
+    spark.driver.memory: "8g"
+    spark.executor.memory: "8g"
+    spark.sql.execution.arrow.maxRecordsPerBatch: "50000"
+    # Required for parquet.`s3a://...` syntax in SparkSource queries
+    spark.sql.runSQLOnFiles: "true"
+    # Disable FIPS mode — UBI9/RHEL FIPS JVM blocks HMAC-SHA256 SecretKeySpec (AWS SDK v1 signing)
+    spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
+    # s3a MinIO access
+    # (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY from feast-s3-credentials secret)
+    spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+    spark.hadoop.fs.s3a.connection.maximum: "100"
+    spark.hadoop.fs.s3a.threads.max: "64"
+  # staging_location: write large materializations to S3 staging before Redis write
+  # auto-converts s3:// → s3a:// internally
+  staging_location: "s3://smartshop-features/feast-staging/"
+
+# batch_engine: controls how feast materialize-incremental writes to the online store.
+#
+# SparkComputeEngineConfig pydantic model accepts: type, partitions, spark_conf,
+# staging_location, region. All spark.* keys MUST be nested under spark_conf.
+#
+# spark.master: k8s://... → Feast pod acts as Spark driver, spawns RAPIDS GPU executor
+# pods on K8s. The feast-spark-driver Service (ports 7078/7079) provides a stable
+# endpoint for executor → driver callbacks.
+#
+# partitions: 10 — controls repartitioning before Redis writes. Keep ≤10 to avoid
+# Redis OOMKill from too many concurrent pipeline connections.
+batch_engine:
+  type: spark.engine
+  partitions: 200
+  spark_conf:
+    # k8s:// distributed mode with RAPIDS GPU acceleration
+    spark.master: "k8s://https://kubernetes.default.svc:443"
+    spark.submit.deployMode: "client"
+    spark.driver.host: "feast-spark-driver.${NAMESPACE}.svc.cluster.local"
+    spark.driver.bindAddress: "0.0.0.0"
+    spark.driver.port: "7078"
+    spark.blockManager.port: "7079"
+    spark.driver.memory: "8g"
+    spark.driver.maxResultSize: "4g"
+    spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
+    # Executor pods — RAPIDS-enabled image with GPU
+    spark.kubernetes.namespace: "${NAMESPACE}"
+    spark.kubernetes.container.image: "${FEAST_SPARK_EXECUTOR_RAPIDS_IMAGE}"
+    spark.kubernetes.container.image.pullPolicy: "Always"
+    spark.kubernetes.authenticate.driver.serviceAccountName: "feast-smartshop-feast"
+    spark.kubernetes.executor.deleteOnTermination: "true"
+    spark.kubernetes.executor.label.feast-job: "materialize"
+    spark.kubernetes.executor.limit.nvidia.com/gpu: "1"
+    spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID: "feast-s3-credentials:AWS_ACCESS_KEY_ID"
+    spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY: "feast-s3-credentials:AWS_SECRET_ACCESS_KEY"
+    spark.executor.instances: "2"
+    spark.executor.cores: "4"
+    spark.kubernetes.executor.request.cores: "3"
+    spark.executor.memory: "6g"
+    spark.executor.memoryOverhead: "14g"
+    spark.executor.extraJavaOptions: "-Duser.dir=/tmp -XX:+UseG1GC -XX:MaxDirectMemorySize=1g"
+    # RAPIDS SQL plugin — accelerates parquet reads, groupBy, agg, joins on GPU
+    spark.rapids.sql.enabled: "true"
+    spark.plugins: "com.nvidia.spark.SQLPlugin"
+    spark.rapids.sql.concurrentGpuTasks: "2"
+    spark.rapids.memory.pinnedPool.size: "1g"
+    spark.rapids.sql.explain: "NOT_ON_GPU"
+    spark.task.resource.gpu.amount: "0.25"
+    spark.executor.resource.gpu.amount: "1"
+    spark.executor.resource.gpu.vendor: "nvidia.com"
+    spark.executor.resource.gpu.discoveryScript: "/opt/spark/getGpusResources.sh"
+    # SQL / Arrow / resilience
+    spark.sql.runSQLOnFiles: "true"
+    spark.ui.enabled: "false"
+    spark.eventLog.enabled: "false"
+    spark.sql.session.timeZone: "UTC"
+    spark.sql.shuffle.partitions: "200"
+    spark.default.parallelism: "200"
+    spark.sql.execution.arrow.pyspark.enabled: "true"
+    spark.sql.execution.arrow.fallback.enabled: "true"
+    spark.sql.execution.arrow.maxRecordsPerBatch: "10000"
+    spark.executor.maxNumFailures: "16"
+    spark.task.maxFailures: "8"
+    spark.network.timeout: "600s"
+    spark.executor.heartbeatInterval: "60s"
+    spark.kubernetes.executor.missingPodDetectDelta: "120s"
+    # s3a MinIO
+    spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+    spark.hadoop.fs.s3a.connection.maximum: "100"
+    spark.hadoop.fs.s3a.threads.max: "64"
+
+online_store:
+  type: redis
+  connection_string: "${REDIS_HOST}:${REDIS_PORT},password=${REDIS_PASSWORD}"
+
+entity_key_serialization_version: 3
+
+auth:
+  type: no_auth

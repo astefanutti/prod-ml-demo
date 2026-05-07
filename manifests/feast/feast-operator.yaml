@@ -1,0 +1,82 @@
+---
+# FeatureStore CR — SmartShop AI
+#
+# Apply:
+#   envsubst < manifests/feast/feast-spark-engine.yaml | oc apply -f -
+#   envsubst < manifests/feast/feast-operator.yaml | oc apply -f -
+apiVersion: feast.dev/v1
+kind: FeatureStore
+metadata:
+  name: smartshop-feast
+  namespace: ${NAMESPACE}
+  labels:
+    feature-store-ui: enabled
+spec:
+  feastProject: smartshop
+
+  feastProjectDir:
+    git:
+      url: ${GIT_REPO:-https://github.com/abhijeet-dhumal/prod-ml-demo.git}
+      ref: ${GIT_BRANCH:-feat/final-phase}
+      featureRepoPath: feast/feature_repo
+
+  batchEngine:
+    configMapRef:
+      name: feast-spark-engine
+
+  services:
+    runFeastApplyOnInit: false
+
+    offlineStore:
+      persistence:
+        store:
+          type: spark
+          secretRef:
+            name: feast-spark-config
+      server:
+        image: ${FEAST_SERVER_IMAGE}
+        envFrom:
+          - secretRef:
+              name: feast-s3-credentials
+        resources:
+          requests:
+            nvidia.com/gpu: "1"
+          limits:
+            memory: 16Gi
+            nvidia.com/gpu: "1"
+
+    onlineStore:
+      persistence:
+        store:
+          type: redis
+          secretRef:
+            name: feast-redis-secret
+      server:
+        image: ${FEAST_SERVER_IMAGE}
+        envFrom:
+          - secretRef:
+              name: feast-s3-credentials
+
+    registry:
+      local:
+        persistence:
+          file:
+            path: registry.db
+            pvc:
+              create:
+                accessModes:
+                  - ReadWriteOnce
+                resources:
+                  requests:
+                    storage: 1Gi
+                storageClassName: ${STORAGE_CLASS:-nfs-csi}
+              mountPath: /feast-registry
+        server:
+          image: ${FEAST_SERVER_IMAGE}
+          envFrom:
+            - secretRef:
+                name: feast-s3-credentials
+          restAPI: true
+
+    ui:
+      image: ${FEAST_SERVER_IMAGE}

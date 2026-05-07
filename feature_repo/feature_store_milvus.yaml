@@ -1,0 +1,145 @@
+# feature_store_milvus.yaml — Milvus online store for review_embeddings RAG path
+#
+# Execution model:
+#   Driver  : Feast pod (offline container) — already has registry PVC + S3 creds
+#   Executors: k8s:// executor pods using feast-spark-executor-embeddings image
+#              (GPU + sentence-transformers + all-MiniLM-L6-v2 baked in)
+#
+# Flow:
+#   S3 raw parquet  →  SparkSource  →  @batch_feature_view  →  _embed() pandas UDF
+#   (sentence-transformers, GPU/CUDA on executor pods)  →  Milvus online store
+#
+# Run via Kubernetes Job (feast-materialize-embeddings-job.yaml):
+#   set -a; source .env; set +a
+#   envsubst < manifests/feast/feast-materialize-embeddings-job.yaml | oc apply -f -
+#   oc logs -n smartshop job/feast-materialize-embeddings -f
+#
+# Registry: remote gRPC (feast-smartshop-feast-registry svc, TLS cert mounted by Job)
+# Required env vars (injected via smartshop-credentials secret in the Job):
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+
+project: smartshop
+provider: local
+
+registry:
+  registry_type: remote
+  path: feast-smartshop-feast-registry.${NAMESPACE}.svc.cluster.local:443
+  cert: /var/run/secrets/feast-registry-tls/tls.crt
+
+# offline_store: feast apply validates SparkSource schemas by starting a local Spark session.
+# The BFV materialization itself is driven by batch_engine (below), not offline_store.
+offline_store:
+  type: spark
+  spark_conf:
+    spark.master: "local[*]"
+    spark.ui.enabled: "false"
+    spark.eventLog.enabled: "false"
+    spark.sql.session.timeZone: "UTC"
+    spark.driver.memory: "4g"
+    spark.driver.extraJavaOptions: "-Dcom.redhat.fips=false"
+    spark.sql.execution.arrow.pyspark.enabled: "true"
+    spark.sql.execution.arrow.fallback.enabled: "true"
+    spark.sql.sources.useV1SourceList: "parquet,csv,json,text,orc"
+    spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+    spark.hadoop.fs.s3a.path.style.access: "true"
+    spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+    spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+    spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+  staging_location: "s3://smartshop-features/feast-staging/"
+
+# batch_engine drives feast materialize.
+#
+# SparkComputeEngine passes this entire block (flat) to SparkConf().setAll() —
+# all Spark keys must be TOP LEVEL, NOT nested under spark_conf.
+# (source: feast/infra/compute_engines/spark/utils.py get_or_create_new_spark_session)
+#
+# spark.master is parameterised via ${SPARK_MASTER}:
+#   local[*]  → single-pod test (driver is executor, no pod scheduling required)
+#   k8s://... → distributed production run with GPU executor pods
+#
+# For k8s:// mode only — the driver pod needs MY_POD_IP via downward API so executors
+# can reach it, and executor pods must use ${SPARK_EXECUTOR_EMBEDDINGS_IMAGE}.
+#
+# Executor sizing for production:  4 instances × 4 cores × 16g RAM
+# partitions: 20 — controls repartitioning before Milvus upsert batches.
+batch_engine:
+  type: spark.engine
+  partitions: 20
+  spark.master: "${SPARK_MASTER}"
+  spark.submit.deployMode: "client"
+  # Executor pods — use same image as embedding SparkApplication (has sentence-transformers)
+  spark.kubernetes.namespace: "${NAMESPACE}"
+  spark.kubernetes.container.image: "${SPARK_EXECUTOR_EMBEDDINGS_IMAGE}"
+  spark.kubernetes.authenticate.driver.serviceAccountName: "spark"
+  spark.kubernetes.executor.deleteOnTermination: "true"
+  # Forward S3 credentials secret to executor pods so they can read s3a:// paths.
+  # feast-s3-credentials is the same secret mounted on the Feast offline container.
+  spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID: "feast-s3-credentials:AWS_ACCESS_KEY_ID"
+  spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY: "feast-s3-credentials:AWS_SECRET_ACCESS_KEY"
+  spark.kubernetes.executor.secretKeyRef.AWS_ENDPOINT_URL_S3: "feast-s3-credentials:AWS_ENDPOINT_URL_S3"
+  # Driver bind address — Feast pod IP exposed via downward API env var MY_POD_IP
+  spark.driver.host: "${MY_POD_IP}"
+  spark.driver.bindAddress: "0.0.0.0"
+  spark.driver.port: "7077"
+  spark.blockManager.port: "7078"
+  spark.driver.memory: "8g"
+  # Executor sizing
+  spark.executor.instances: "4"
+  spark.executor.memory: "24g"
+  spark.executor.memoryOverhead: "8g"
+  spark.executor.extraJavaOptions: "-Duser.dir=/tmp"
+  # GPU: sentence-transformers CUDA inference in pandas UDF on executor pods
+  spark.executor.resource.gpu.amount: "1"
+  spark.executor.resource.gpu.vendor: "nvidia.com"
+  spark.executor.resource.gpu.discoveryScript: "/opt/spark/getGpusResources.sh"
+  # Explicitly disable RAPIDS — the executor image has the JAR but it only accelerates
+  # Spark SQL ops, not pandas UDFs. It wastes GPU memory that PyTorch needs.
+  spark.rapids.sql.enabled: "false"
+  # 1 core per executor — one Python UDF worker per GPU avoids OOMKill
+  # from multiple concurrent sentence-transformers loads
+  spark.executor.cores: "1"
+  spark.driver.extraJavaOptions: "-Duser.dir=/tmp -Dcom.redhat.fips=false"
+  # HuggingFace model cache — baked into the executor image at /opt/hf-cache
+  spark.executorEnv.HF_HOME: "/opt/hf-cache"
+  spark.executorEnv.TRANSFORMERS_CACHE: "/opt/hf-cache"
+  spark.executorEnv.HF_HUB_OFFLINE: "1"
+  spark.executorEnv.HF_DATASETS_OFFLINE: "1"
+  # SQL / Arrow
+  spark.ui.enabled: "false"
+  spark.eventLog.enabled: "true"
+  spark.eventLog.dir: "s3a://smartshop-spark-logs/events"
+  spark.eventLog.compress: "true"
+  spark.sql.adaptive.enabled: "true"
+  spark.sql.session.timeZone: "UTC"
+  # Spark 3.4+ defaults parquet to V2 data source which blocks FROM parquet.`path` SQL syntax.
+  # Force V1 source list so SparkSource query= (parquet.`s3a://...`) works.
+  spark.sql.sources.useV1SourceList: "parquet,csv,json,text,orc"
+  spark.sql.shuffle.partitions: "32"
+  spark.default.parallelism: "32"
+  spark.sql.execution.arrow.pyspark.enabled: "true"
+  spark.sql.execution.arrow.fallback.enabled: "true"
+  spark.sql.execution.arrow.maxRecordsPerBatch: "100000"
+  # S3 / MinIO
+  spark.hadoop.fs.s3a.endpoint: "http://minio.${NAMESPACE}.svc.cluster.local:9000"
+  spark.hadoop.fs.s3a.path.style.access: "true"
+  spark.hadoop.fs.s3a.impl: "org.apache.hadoop.fs.s3a.S3AFileSystem"
+  spark.hadoop.fs.s3a.aws.credentials.provider: "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
+  spark.hadoop.fs.s3a.connection.ssl.enabled: "false"
+  spark.hadoop.fs.s3a.connection.maximum: "100"
+  spark.hadoop.fs.s3a.threads.max: "64"
+  # NOTE: hadoop-aws + aws-java-sdk JARs are baked into feast-spark-executor-embeddings
+  # (see Containerfile.feast-spark-executor). Loading duplicate JARs via spark.jars
+  # causes S3A class conflicts that break FROM parquet.`s3a://` SQL syntax. Skip here.
+
+online_store:
+  type: milvus
+  host: "http://milvus.${NAMESPACE}.svc.cluster.local"
+  port: 19530
+  vector_enabled: true
+  embedding_dim: 384
+  index_type: "IVF_FLAT"
+
+entity_key_serialization_version: 3
+
+auth:
+  type: no_auth

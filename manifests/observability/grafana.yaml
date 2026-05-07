@@ -1,0 +1,554 @@
+---
+# Grafana — visualization layer for all SmartShop observability metrics.
+#
+# Datasources wired automatically via ConfigMap provisioning:
+#   - OCP Thanos (long-term Prometheus) — DCGM GPU, Redis, Spark metrics
+#   - MLflow REST API — not natively supported; use the mlflow-datasource plugin or notebook
+#
+# Pre-loaded dashboards (see grafana-dashboards ConfigMap below):
+#   1. GPU Performance (RAPIDS vs CPU) — DCGM utilization, memory, power, NVLink BW
+#   2. Redis Feature Store          — ops/sec, hit ratio, memory, connected clients
+#   3. Spark Executor Metrics       — heap, GC, shuffle (from PrometheusServlet)
+#
+# ACCESS:
+#   oc get route grafana -n smartshop
+#   Default login: admin / smartshop2026 (change after first login)
+#
+# APPLY:
+#   /bin/bash -c 'set -a; source .env; set +a; envsubst < manifests/observability/grafana.yaml | oc apply -f -'
+#
+# NOTE: This uses the Grafana OSS image directly (no Grafana Operator required).
+# For production use, install the Grafana Operator from OperatorHub instead.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+    component: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+        component: observability
+    spec:
+      serviceAccountName: grafana-sa
+      containers:
+        - name: grafana
+          image: ${GRAFANA_IMAGE}
+          ports:
+            - containerPort: 3000
+              name: http
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "${GRAFANA_ADMIN_PASSWORD}"
+            - name: GF_SECURITY_ADMIN_USER
+              value: "${GRAFANA_ADMIN_USER}"
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Viewer"
+            - name: GF_PATHS_PROVISIONING
+              value: "/etc/grafana/provisioning"
+            # Allow unsigned plugins if installing mlflow-datasource
+            - name: GF_USERS_DEFAULT_THEME
+              value: "light"
+            - name: GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS
+              value: "grafana-mlflow-datasource"
+          volumeMounts:
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: grafana-dashboards-provisioning
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
+            - name: grafana-storage
+              mountPath: /var/lib/grafana/data
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+      volumes:
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+        - name: grafana-dashboards-provisioning
+          configMap:
+            name: grafana-dashboards-provisioning
+        - name: grafana-dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: grafana-storage
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-sa
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+
+---
+# Allow Grafana SA to read Thanos metrics (required for cluster-level Prometheus query)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: grafana-thanos-reader-${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: grafana-sa
+    namespace: ${NAMESPACE}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: grafana
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+spec:
+  to:
+    kind: Service
+    name: grafana
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+
+---
+# Datasources — Thanos (OCP Prometheus) auto-auth via Service Account token
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: OCP-Thanos
+        type: prometheus
+        uid: ocp-thanos
+        url: ${THANOS_QUERIER_URL}
+        access: proxy
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          timeInterval: "15s"
+          tlsSkipVerify: true
+          httpHeaderName1: "Authorization"
+        secureJsonData:
+          httpHeaderValue1: "Bearer ${PROMETHEUS_TOKEN}"
+      - name: OCP-UserWorkload
+        type: prometheus
+        uid: ocp-uwm
+        url: ${THANOS_QUERIER_UWM_URL}
+        access: proxy
+        jsonData:
+          httpMethod: POST
+          timeInterval: "15s"
+          tlsSkipVerify: true
+          httpHeaderName1: "Authorization"
+        secureJsonData:
+          httpHeaderValue1: "Bearer ${PROMETHEUS_TOKEN}"
+
+---
+# Dashboard provisioning config — tells Grafana where to find dashboard JSON files
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provisioning
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: smartshop
+        orgId: 1
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+# Dashboard JSON — SmartShop observability panels
+# GPU Performance, Training Jobs, Inference Metrics
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: ${NAMESPACE}
+  labels:
+    app: grafana
+data:
+  gpu-performance.json: |
+    {
+      "title": "SmartShop GPU Performance (RAPIDS vs CPU)",
+      "uid": "smartshop-gpu",
+      "refresh": "15s",
+      "time": {"from": "now-1h", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "title": "GPU Utilization % (all GPUs)",
+          "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_GPU_UTIL",
+            "legendFormat": "GPU {{gpu}} @ {{Hostname}}"}]
+        },
+        {
+          "id": 2, "title": "GPU Framebuffer Memory Used (MB)",
+          "type": "timeseries", "gridPos": {"x":12,"y":0,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_FB_USED",
+            "legendFormat": "GPU {{gpu}} @ {{Hostname}}"}]
+        },
+        {
+          "id": 3, "title": "SM Active Ratio (0=idle, 1=fully loaded)",
+          "type": "timeseries", "gridPos": {"x":0,"y":8,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_PROF_GR_ENGINE_ACTIVE",
+            "legendFormat": "GPU {{gpu}}"}]
+        },
+        {
+          "id": 4, "title": "DRAM Active Ratio (memory bus)",
+          "type": "timeseries", "gridPos": {"x":12,"y":8,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_PROF_DRAM_ACTIVE",
+            "legendFormat": "GPU {{gpu}}"}]
+        },
+        {
+          "id": 5, "title": "NVLink Bandwidth (MB/s)",
+          "type": "timeseries", "gridPos": {"x":0,"y":16,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"lineWidth": 2}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "increase(DCGM_FI_DEV_NVLINK_BANDWIDTH_TOTAL[1m]) / 60",
+            "legendFormat": "GPU {{gpu}} NVLink"}]
+        },
+        {
+          "id": 6, "title": "GPU Power Usage (W)",
+          "type": "timeseries", "gridPos": {"x":12,"y":16,"w":12,"h":8},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_POWER_USAGE",
+            "legendFormat": "GPU {{gpu}}"}]
+        },
+        {
+          "id": 100, "title": "Spark Executor Pod Metrics (CPU run & RAPIDS run)",
+          "type": "row", "gridPos": {"x":0,"y":24,"w":24,"h":1},
+          "collapsed": false
+        },
+        {
+          "id": 7, "title": "Executor CPU Usage (cores) — CPU & RAPIDS",
+          "type": "timeseries", "gridPos": {"x":0,"y":25,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 15}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"${NAMESPACE}\", pod=~\"pyspark-shell-.*-exec-.*\", container!=\"POD\", container!=\"\"}[1m])) by (pod)",
+            "legendFormat": "{{pod}}"}]
+        },
+        {
+          "id": 8, "title": "Executor Memory Working Set (MB) — CPU & RAPIDS",
+          "type": "timeseries", "gridPos": {"x":12,"y":25,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "sum(container_memory_working_set_bytes{namespace=\"${NAMESPACE}\", pod=~\"pyspark-shell-.*-exec-.*\", container!=\"POD\", container!=\"\"}) by (pod)",
+            "legendFormat": "{{pod}}"}]
+        },
+        {
+          "id": 9, "title": "Executor OOM Kills / Pod Restarts — CPU & RAPIDS",
+          "type": "timeseries", "gridPos": {"x":0,"y":33,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "kube_pod_container_status_restarts_total{namespace=\"${NAMESPACE}\", pod=~\"pyspark-shell-.*-exec-.*\"}",
+            "legendFormat": "{{pod}} restarts"}]
+        },
+        {
+          "id": 10, "title": "Redis Keys Written — CPU & RAPIDS materialization",
+          "type": "timeseries", "gridPos": {"x":12,"y":33,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "redis_db_keys{namespace=\"${NAMESPACE}\"}",
+            "legendFormat": "Redis keys ({{db}})"}]
+        }
+      ]
+    }
+
+  training-jobs.json: |
+    {
+      "title": "SmartShop Training Jobs",
+      "uid": "smartshop-training",
+      "refresh": "15s",
+      "time": {"from": "now-3h", "to": "now"},
+      "panels": [
+        {
+          "id": 100, "title": "GPU Metrics",
+          "type": "row", "gridPos": {"x":0,"y":0,"w":24,"h":1},
+          "collapsed": false
+        },
+        {
+          "id": 1, "title": "GPU Utilization %",
+          "type": "timeseries", "gridPos": {"x":0,"y":1,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100, "custom": {"lineWidth": 2, "fillOpacity": 15}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_GPU_UTIL",
+            "legendFormat": "GPU {{gpu}} @ {{Hostname}}"}]
+        },
+        {
+          "id": 2, "title": "GPU Memory Used (MB)",
+          "type": "timeseries", "gridPos": {"x":12,"y":1,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "decmbytes", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_FB_USED",
+            "legendFormat": "GPU {{gpu}} @ {{Hostname}}"}]
+        },
+        {
+          "id": 3, "title": "GPU Power Usage (W)",
+          "type": "timeseries", "gridPos": {"x":0,"y":9,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "watt", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_DEV_POWER_USAGE",
+            "legendFormat": "GPU {{gpu}}"}]
+        },
+        {
+          "id": 4, "title": "SM Active Ratio",
+          "type": "timeseries", "gridPos": {"x":12,"y":9,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "DCGM_FI_PROF_GR_ENGINE_ACTIVE",
+            "legendFormat": "GPU {{gpu}}"}]
+        },
+        {
+          "id": 200, "title": "Training Pod Resources",
+          "type": "row", "gridPos": {"x":0,"y":17,"w":24,"h":1},
+          "collapsed": false
+        },
+        {
+          "id": 5, "title": "Pod CPU Usage (cores)",
+          "type": "timeseries", "gridPos": {"x":0,"y":18,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 15}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"${NAMESPACE}\", pod=~\"rec-train-.*-node-.*|llm-finetune-.*-node-.*\", container!=\"POD\", container!=\"\"}[1m])) by (pod)",
+            "legendFormat": "{{pod}}"}]
+        },
+        {
+          "id": 6, "title": "Pod Memory Working Set",
+          "type": "timeseries", "gridPos": {"x":12,"y":18,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "sum(container_memory_working_set_bytes{namespace=\"${NAMESPACE}\", pod=~\"rec-train-.*-node-.*|llm-finetune-.*-node-.*\", container!=\"POD\", container!=\"\"}) by (pod)",
+            "legendFormat": "{{pod}}"}]
+        },
+        {
+          "id": 300, "title": "NCCL / DDP Network Traffic",
+          "type": "row", "gridPos": {"x":0,"y":26,"w":24,"h":1},
+          "collapsed": false
+        },
+        {
+          "id": 7, "title": "Network RX (bytes/sec)",
+          "type": "timeseries", "gridPos": {"x":0,"y":27,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "sum(rate(container_network_receive_bytes_total{namespace=\"${NAMESPACE}\", pod=~\"rec-train-.*-node-.*|llm-finetune-.*-node-.*\"}[1m])) by (pod)",
+            "legendFormat": "{{pod}}"}]
+        },
+        {
+          "id": 8, "title": "Network TX (bytes/sec)",
+          "type": "timeseries", "gridPos": {"x":12,"y":27,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "Bps", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "sum(rate(container_network_transmit_bytes_total{namespace=\"${NAMESPACE}\", pod=~\"rec-train-.*-node-.*|llm-finetune-.*-node-.*\"}[1m])) by (pod)",
+            "legendFormat": "{{pod}}"}]
+        },
+        {
+          "id": 400, "title": "Pod Restarts & Health",
+          "type": "row", "gridPos": {"x":0,"y":35,"w":24,"h":1},
+          "collapsed": false
+        },
+        {
+          "id": 9, "title": "Pod Restarts",
+          "type": "timeseries", "gridPos": {"x":0,"y":36,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "kube_pod_container_status_restarts_total{namespace=\"${NAMESPACE}\", pod=~\"rec-train-.*-node-.*|llm-finetune-.*-node-.*\"}",
+            "legendFormat": "{{pod}}"}]
+        },
+        {
+          "id": 10, "title": "Running Training Pods",
+          "type": "stat", "gridPos": {"x":12,"y":36,"w":6,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color":"red","value":0},{"color":"green","value":1}]}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "count(kube_pod_status_phase{namespace=\"${NAMESPACE}\", pod=~\"rec-train-.*-node-.*|llm-finetune-.*-node-.*\", phase=\"Running\"}) or vector(0)",
+            "legendFormat": "pods"}]
+        },
+        {
+          "id": 11, "title": "GPUs Allocated to Training",
+          "type": "stat", "gridPos": {"x":18,"y":36,"w":6,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "thresholds": {"steps": [{"color":"blue","value":0},{"color":"green","value":1}]}}},
+          "targets": [{"datasource": "ocp-thanos",
+            "expr": "sum(kube_pod_container_resource_requests{namespace=\"${NAMESPACE}\", pod=~\"rec-train-.*-node-.*|llm-finetune-.*-node-.*\", resource=\"nvidia_com_gpu\"}) or vector(0)",
+            "legendFormat": "GPUs"}]
+        }
+      ]
+    }
+
+  smartshop-inference.json: |
+    {
+      "title": "SmartShop Inference Metrics",
+      "uid": "smartshop-inference",
+      "refresh": "10s",
+      "time": {"from": "now-30m", "to": "now"},
+      "panels": [
+        {
+          "id": 1, "title": "Request Rate (req/s)",
+          "type": "timeseries", "gridPos": {"x":0,"y":0,"w":12,"h":8},
+          "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rec_requests_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "Rec Model"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:request_success_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "LLM (vLLM)"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(smartshop_rag_requests_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "RAG Q&A"}
+          ]
+        },
+        {
+          "id": 2, "title": "vLLM — KV Cache Usage %",
+          "type": "gauge", "gridPos": {"x":12,"y":0,"w":6,"h":8},
+          "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1, "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.7}, {"color": "red", "value": 0.9}]}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "vllm:kv_cache_usage_perc{namespace=\"${NAMESPACE}\"}", "legendFormat": "KV cache"}
+          ]
+        },
+        {
+          "id": 3, "title": "vLLM — Running / Waiting Requests",
+          "type": "timeseries", "gridPos": {"x":18,"y":0,"w":6,"h":8},
+          "fieldConfig": {"defaults": {"custom": {"lineWidth": 2, "fillOpacity": 15}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "vllm:num_requests_running{namespace=\"${NAMESPACE}\"}", "legendFormat": "Running"},
+            {"datasource": "ocp-thanos", "expr": "vllm:num_requests_waiting{namespace=\"${NAMESPACE}\"}", "legendFormat": "Waiting"}
+          ]
+        },
+        {
+          "id": 4, "title": "Rec Model Latency (p50 / p95 / p99)",
+          "type": "timeseries", "gridPos": {"x":0,"y":8,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p95"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.99, sum(rate(smartshop_rec_request_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p99"}
+          ]
+        },
+        {
+          "id": 5, "title": "vLLM End-to-End Latency (p50 / p95)",
+          "type": "timeseries", "gridPos": {"x":8,"y":8,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:e2e_request_latency_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "p95"}
+          ]
+        },
+        {
+          "id": 6, "title": "RAG Latency Breakdown (p95)",
+          "type": "timeseries", "gridPos": {"x":16,"y":8,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_retrieval_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "Retrieval (Milvus)"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_llm_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "LLM Generation"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(smartshop_rag_request_duration_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "Total"}
+          ]
+        },
+        {
+          "id": 7, "title": "vLLM — Time to First Token (p50 / p95)",
+          "type": "timeseries", "gridPos": {"x":0,"y":16,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "TTFT p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:time_to_first_token_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "TTFT p95"}
+          ]
+        },
+        {
+          "id": 8, "title": "vLLM — Token Throughput (tokens/s)",
+          "type": "timeseries", "gridPos": {"x":8,"y":16,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 10}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:prompt_tokens_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "Prompt tokens/s"},
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:generation_tokens_total{namespace=\"${NAMESPACE}\"}[1m]))", "legendFormat": "Generation tokens/s"}
+          ]
+        },
+        {
+          "id": 9, "title": "vLLM — Inter-Token Latency (p50 / p95)",
+          "type": "timeseries", "gridPos": {"x":16,"y":16,"w":8,"h":8},
+          "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2}}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.50, sum(rate(vllm:inter_token_latency_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "ITL p50"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:inter_token_latency_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "ITL p95"}
+          ]
+        },
+        {
+          "id": 10, "title": "Rec — Candidates Scored",
+          "type": "stat", "gridPos": {"x":0,"y":24,"w":6,"h":5},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "smartshop_rec_candidates_scored_sum{namespace=\"${NAMESPACE}\"} / smartshop_rec_candidates_scored_count{namespace=\"${NAMESPACE}\"}", "legendFormat": "avg/request"}
+          ]
+        },
+        {
+          "id": 11, "title": "RAG — Sources Retrieved",
+          "type": "stat", "gridPos": {"x":6,"y":24,"w":6,"h":5},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "smartshop_rag_sources_retrieved_sum{namespace=\"${NAMESPACE}\"} / smartshop_rag_sources_retrieved_count{namespace=\"${NAMESPACE}\"}", "legendFormat": "avg sources"}
+          ]
+        },
+        {
+          "id": 12, "title": "vLLM — Avg Generation Tokens / Request",
+          "type": "stat", "gridPos": {"x":12,"y":24,"w":6,"h":5},
+          "fieldConfig": {"defaults": {"unit": "short"}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "sum(rate(vllm:request_generation_tokens_sum{namespace=\"${NAMESPACE}\"}[5m])) / sum(rate(vllm:request_generation_tokens_count{namespace=\"${NAMESPACE}\"}[5m]))", "legendFormat": "avg tokens"}
+          ]
+        },
+        {
+          "id": 13, "title": "vLLM — Prefill vs Decode Time (p95)",
+          "type": "stat", "gridPos": {"x":18,"y":24,"w":6,"h":5},
+          "fieldConfig": {"defaults": {"unit": "s"}},
+          "targets": [
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:request_prefill_time_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "Prefill p95"},
+            {"datasource": "ocp-thanos", "expr": "histogram_quantile(0.95, sum(rate(vllm:request_decode_time_seconds_bucket{namespace=\"${NAMESPACE}\"}[5m])) by (le))", "legendFormat": "Decode p95"}
+          ]
+        }
+      ]
+    }

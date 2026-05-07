@@ -1,0 +1,23 @@
+# Minimal Feast config for the recommendation serving pod.
+# Online store only (Redis) — no Spark / offline store needed.
+# Used by serving/recommendation/server.py for get_online_features().
+
+project: smartshop
+provider: local
+
+registry:
+  registry_type: remote
+  path: feast-smartshop-feast-registry.${NAMESPACE}.svc.cluster.local:443
+  cert: /var/run/secrets/feast-registry-tls/service-ca.crt
+
+offline_store:
+  type: file
+
+online_store:
+  type: redis
+  connection_string: "${REDIS_HOST}:${REDIS_PORT},password=${REDIS_PASSWORD}"
+
+entity_key_serialization_version: 3
+
+auth:
+  type: no_auth

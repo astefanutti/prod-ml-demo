@@ -1,0 +1,319 @@
+---
+# Data Download Job — streams Amazon Reviews 2023 from HuggingFace Hub directly to MinIO.
+#
+# WHY ON-CLUSTER:
+#   The full Electronics JSONL alone is ~22GB — too large to cache locally.
+#   Streaming HF → MinIO on-cluster avoids local disk and is ~3× faster (datacenter bandwidth).
+#
+# WHAT IT DOES:
+#   Streams raw/review_categories/{Category}.jsonl from HuggingFace line-by-line,
+#   converts to Parquet in 500K-row chunks, writes directly to MinIO via s3fs.
+#   Reviews (full)  → s3://smartshop-raw/raw/reviews/{Category}/part-NNNN.parquet
+#   Reviews (sample)→ s3://smartshop-raw/raw/reviews/{Category}.parquet
+#   Metadata        → s3://smartshop-raw/raw/metadata/{Category}_meta/part-NNNN.parquet
+#
+# FULL DATASET SIZES (2023):
+#   Electronics: 22.6 GB  |  Books: 20.1 GB  |  Home_and_Kitchen: 31.4 GB  (~74 GB total)
+#   Expected runtime: ~2-3 hours on cluster (datacenter bandwidth)
+#
+# IMAGE: spark-jobs (UBI9/Python 3.12) — ships huggingface_hub, requests, pandas, pyarrow, s3fs
+#
+# USAGE:
+#   /bin/bash -c 'set -a; source .env; set +a; envsubst < manifests/infra/data-download-job.yaml | oc apply -f -'
+#   oc logs -n smartshop -f job/smartshop-data-download-medium
+#
+# DATA SIZES:
+#   sample (333K/cat) → ~330 MB Parquet | ~30s  | dev/testing
+#   medium (5M/cat)   → ~3-5 GB Parquet | ~30min | DEMO — enough for training + LoRA fine-tuning
+#   full   (all data) → ~25 GB Parquet  | ~3-8h  | only if you need real-scale numbers for publication
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smartshop-data-download-medium
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: data-pipeline
+    mode: medium
+spec:
+  ttlSecondsAfterFinished: 86400   # keep logs for 24h after completion
+  backoffLimit: 3
+  activeDeadlineSeconds: 7200      # 2-hour hard limit (15-30 min expected)
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: downloader
+          image: ${SPARK_JOBS_IMAGE}
+          imagePullPolicy: Always
+          command: [python3, /opt/download/download_to_minio.py]
+          env:
+            - name: DATA_DOWNLOAD_MODE
+              value: "full"           # no META_SAMPLE limit — download complete catalog
+            - name: CATEGORIES
+              value: "Books,Home_and_Kitchen"
+            - name: CHUNK_SIZE
+              value: "500000"         # rows per Parquet part file
+            - name: SAMPLE_PER_CATEGORY
+              value: "5000000"        # 5M rows/category (sweet spot for training + LoRA fine-tuning demo)
+            - name: META_SAMPLE
+              value: "200000"         # 200K metadata rows/category
+            - name: METADATA_ONLY
+              value: "true"           # skip reviews, only download missing metadata
+            - name: S3_RAW_BUCKET
+              value: "${S3_RAW_BUCKET}"
+          envFrom:
+            - secretRef:
+                name: smartshop-credentials
+            - secretRef:
+                name: hf-credentials
+          volumeMounts:
+            - name: download-script
+              mountPath: /opt/download
+          resources:
+            requests:
+              cpu: "4"
+              memory: 8Gi
+            limits:
+              cpu: "8"
+              memory: 16Gi
+      volumes:
+        - name: download-script
+          configMap:
+            name: smartshop-download-script
+            defaultMode: 0755
+---
+# ConfigMap embeds the download script so the Job is fully self-contained.
+# Update the script here if the HuggingFace dataset layout changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smartshop-download-script
+  namespace: ${NAMESPACE}
+  labels:
+    app: smartshop
+    component: data-pipeline
+data:
+  download_to_minio.py: |
+    """Stream Amazon Reviews 2023 from HuggingFace directly to MinIO.
+
+    Uses only packages available in the spark-jobs image:
+      huggingface_hub, requests, pandas, pyarrow, s3fs
+    Does NOT require the `datasets` library.
+
+    Output layout (full mode):
+      raw/reviews/{Category}/part-NNNN.parquet   (500K rows each, Spark-readable dir)
+      raw/metadata/{Category}_meta/part-NN.parquet
+
+    Output layout (sample mode):
+      raw/reviews/{Category}.parquet             (single file, fast)
+      raw/metadata/{Category}_meta.parquet
+
+    Env vars:
+      DATA_DOWNLOAD_MODE  sample | full
+      CATEGORIES          comma-separated list
+      CHUNK_SIZE          rows per part file in full mode (default 500000)
+      SAMPLE_PER_CATEGORY rows per category (sample mode only)
+      META_SAMPLE         metadata rows (sample mode only)
+      token               HuggingFace read token (from hf-credentials secret)
+      AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / MINIO_ENDPOINT
+    """
+
+    import io, json, os, time
+
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    import requests
+    import s3fs
+    from huggingface_hub import hf_hub_download, list_repo_files
+
+    DATASET    = "McAuley-Lab/Amazon-Reviews-2023"
+    HF_TOKEN   = os.environ.get("token") or os.environ.get("HF_TOKEN", "")
+    MODE       = os.environ.get("DATA_DOWNLOAD_MODE", "sample")
+    CATEGORIES = os.environ.get("CATEGORIES", "Electronics,Books,Home_and_Kitchen").split(",")
+    CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 500_000))
+    SAMPLE_N   = int(os.environ.get("SAMPLE_PER_CATEGORY", 333334))
+    META_N     = int(os.environ.get("META_SAMPLE", 50000))
+    META_ONLY  = os.environ.get("METADATA_ONLY", "false").lower() == "true"
+
+    MINIO_ENDPOINT = os.environ["MINIO_ENDPOINT"]
+    S3_BUCKET  = os.environ.get("S3_RAW_BUCKET", "smartshop-raw")
+
+    print(f"=== SmartShop Data Download ===")
+    print(f"mode={MODE} | categories={CATEGORIES} | chunk_size={CHUNK_SIZE:,}")
+    print(f"HF_TOKEN present: {bool(HF_TOKEN)}")
+    print(f"MINIO_ENDPOINT: {MINIO_ENDPOINT}")
+
+    fs = s3fs.S3FileSystem(
+        key=os.environ["AWS_ACCESS_KEY_ID"],
+        secret=os.environ["AWS_SECRET_ACCESS_KEY"],
+        endpoint_url=MINIO_ENDPOINT,
+        use_ssl=False,
+    )
+
+
+    def write_parquet_to_s3(rows: list, s3_path: str) -> int:
+        """Convert rows list → Parquet and upload to S3. Returns bytes written."""
+        df = pd.DataFrame(rows)
+        for col in df.columns:
+            if df[col].dtype == object:
+                df[col] = df[col].astype(str)
+        table = pa.Table.from_pandas(df, preserve_index=False)
+        buf = io.BytesIO()
+        pq.write_table(table, buf, compression="snappy")
+        size = buf.tell()
+        buf.seek(0)
+        with fs.open(s3_path, "wb") as fh:
+            fh.write(buf.read())
+        print(f"  wrote {len(rows):,} rows ({size/1e6:.1f} MB) → s3://{s3_path}")
+        return size
+
+
+    def hf_resolve_url(filename: str) -> str:
+        return f"https://huggingface.co/datasets/{DATASET}/resolve/main/{filename}"
+
+
+    def download_reviews(category: str) -> None:
+        t0 = time.time()
+        filename = f"raw/review_categories/{category}.jsonl"
+        url = hf_resolve_url(filename)
+        print(f"\n[{category}] streaming reviews ({MODE}) ...")
+
+        headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+        max_rows = SAMPLE_N if MODE == "sample" else None
+        flush_every = CHUNK_SIZE if MODE == "full" else (max_rows or CHUNK_SIZE)
+
+        rows: list = []
+        total = 0
+        part = 0
+        total_bytes = 0
+
+        with requests.get(url, headers=headers, stream=True, timeout=600) as resp:
+            resp.raise_for_status()
+            for raw_line in resp.iter_lines():
+                if not raw_line:
+                    continue
+                rows.append(json.loads(raw_line))
+                total += 1
+
+                if total % 100_000 == 0:
+                    elapsed = time.time() - t0
+                    print(f"  [{category}] {total:,} rows | {elapsed:.0f}s | {total/elapsed:,.0f} rows/s")
+
+                if len(rows) >= flush_every:
+                    if MODE == "full":
+                        dest = f"{S3_BUCKET}/raw/reviews/{category}/part-{part:04d}.parquet"
+                    else:
+                        dest = f"{S3_BUCKET}/raw/reviews/{category}.parquet"
+                    total_bytes += write_parquet_to_s3(rows, dest)
+                    rows = []
+                    part += 1
+
+                if max_rows and total >= max_rows:
+                    break
+
+        # flush tail
+        if rows:
+            if MODE == "full":
+                dest = f"{S3_BUCKET}/raw/reviews/{category}/part-{part:04d}.parquet"
+            else:
+                dest = f"{S3_BUCKET}/raw/reviews/{category}.parquet"
+            total_bytes += write_parquet_to_s3(rows, dest)
+            part += 1
+
+        elapsed = time.time() - t0
+        print(f"[{category}] reviews done: {total:,} rows | {part} part(s) | "
+              f"{total_bytes/1e9:.2f} GB written | {elapsed:.1f}s | {total/elapsed:,.0f} rows/s")
+
+
+    def download_metadata(category: str) -> None:
+        t0 = time.time()
+        print(f"\n[{category}] listing metadata shards...")
+        all_files = list(list_repo_files(DATASET, repo_type="dataset", token=HF_TOKEN or None))
+        shards = sorted(f for f in all_files
+                        if f.startswith(f"raw_meta_{category}/") and f.endswith(".parquet"))
+
+        if shards:
+            print(f"  [{category}] found {len(shards)} parquet shard(s)")
+            collected = 0
+            for i, shard in enumerate(shards):
+                local = hf_hub_download(repo_id=DATASET, filename=shard,
+                                        repo_type="dataset", token=HF_TOKEN or None)
+                df = pd.read_parquet(local)
+
+                if MODE == "sample":
+                    remaining = META_N - collected
+                    if remaining <= 0:
+                        break
+                    df = df.head(remaining)
+
+                if MODE == "full":
+                    dest = f"{S3_BUCKET}/raw/metadata/{category}_meta/part-{i:04d}.parquet"
+                else:
+                    dest = f"{S3_BUCKET}/raw/metadata/{category}_meta.parquet"
+
+                write_parquet_to_s3(df.to_dict("records"), dest)
+                collected += len(df)
+                print(f"  [{category}] shard {i+1}/{len(shards)}: {len(df):,} rows → {dest}")
+
+                if MODE == "sample" and collected >= META_N:
+                    break
+        else:
+            jsonl_path = f"raw/meta_categories/meta_{category}.jsonl"
+            if jsonl_path not in all_files:
+                print(f"  [{category}] no metadata found (parquet or JSONL) — skipping")
+                elapsed = time.time() - t0
+                print(f"[{category}] metadata skipped in {elapsed:.1f}s")
+                return
+
+            print(f"  [{category}] no parquet shards, falling back to JSONL: {jsonl_path}")
+            url = hf_resolve_url(jsonl_path)
+            headers = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
+            rows: list = []
+            collected = 0
+            part = 0
+            meta_chunk = min(CHUNK_SIZE, 50_000)
+
+            with requests.get(url, headers=headers, stream=True, timeout=3600) as resp:
+                resp.raise_for_status()
+                for raw_line in resp.iter_lines():
+                    if not raw_line:
+                        continue
+                    rows.append(json.loads(raw_line))
+                    collected += 1
+
+                    if collected % 50_000 == 0:
+                        print(f"  [{category}] metadata {collected:,} rows streamed...")
+
+                    if len(rows) >= meta_chunk:
+                        if MODE == "full":
+                            dest = f"{S3_BUCKET}/raw/metadata/{category}_meta/part-{part:04d}.parquet"
+                        else:
+                            dest = f"{S3_BUCKET}/raw/metadata/{category}_meta.parquet"
+                        write_parquet_to_s3(rows, dest)
+                        rows = []
+                        part += 1
+
+                    if MODE == "sample" and collected >= META_N:
+                        break
+
+            if rows:
+                if MODE == "full":
+                    dest = f"{S3_BUCKET}/raw/metadata/{category}_meta/part-{part:04d}.parquet"
+                else:
+                    dest = f"{S3_BUCKET}/raw/metadata/{category}_meta.parquet"
+                write_parquet_to_s3(rows, dest)
+
+        elapsed = time.time() - t0
+        print(f"[{category}] metadata done: {collected:,} rows in {elapsed:.1f}s")
+
+
+    if __name__ == "__main__":
+        grand_start = time.time()
+        for cat in CATEGORIES:
+            if not META_ONLY:
+                download_reviews(cat)
+            download_metadata(cat)
+        total_elapsed = time.time() - grand_start
+        print(f"\n=== Download complete | total time: {total_elapsed/60:.1f} min ===")
